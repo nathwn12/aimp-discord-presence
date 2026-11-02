@@ -14,7 +14,7 @@ key, and what to try when the presence does not appear.
 ## Installation (prebuilt)
 
 1. **Get the plugin.** Download a built release archive from the
-   [Releases page](https://github.com/nathwn12/aimp-discord-presence2/releases)
+   [Releases page](https://github.com/nathwn12/aimp-discord-presence/releases)
    of this fork, or build it yourself (see [Build from source](#build-from-source)
    below).
 2. **Open the plugin installer in AIMP.** In AIMP, open **Settings** (the gear
@@ -45,8 +45,8 @@ in-repo, under `lib/aimp-glue/` (see the fork note in the [README](../README.md)
 
 ```powershell
 # Clone this fork together with its AIMP SDK submodule.
-git clone --recursive https://github.com/nathwn12/aimp-discord-presence2.git
-cd aimp-discord-presence2
+git clone --recursive https://github.com/nathwn12/aimp-discord-presence.git
+cd aimp-discord-presence
 
 # If you cloned without --recursive, initialize the submodule instead:
 # git submodule update --init --recursive
