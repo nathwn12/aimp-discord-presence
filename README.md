@@ -1,8 +1,8 @@
-> **Fork note (nathwn12):** this copy exists as a maintained line of [Exle/aimp-discord-presence](https://github.com/Exle/aimp-discord-presence), shipping its own releases with cover-art and presence work ahead of upstream.
+> **Fork note (nathwn12):** this copy exists as a maintained line of Exle's aimp-discord-presence, shipping its own releases with cover-art and presence work ahead of upstream.
 >
 > What it changes: multi-layer cover-art chain (embedded/sidecar/online lookup), Spotify-parity presence card, configurable payload, and a portable build script.
 >
-> The docs below describe this fork; upstream credit stays with Exle — upstream's own README lives at https://github.com/Exle/aimp-discord-presence.
+> The docs below describe this fork; upstream credit stays with Exle.
 
 # AIMP Discord Presence
 
