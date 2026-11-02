@@ -66,6 +66,13 @@ CoverRepo=your-username/your-covers-repo
 Building from source, every configuration key, your own cover repository and token, privacy,
 and a troubleshooting table: **[docs/GUIDE.md](docs/GUIDE.md)**.
 
+## Status
+
+Experimental and still moving. It works today, but it is not a finished
+product: interfaces may change, features may be improved or removed, and a
+release can break the one before it. This is maintained by one person, not a
+team. If it breaks, open an issue with the command you ran and what you saw.
+
 ## Credits and licence
 
 Fork of **Exle**'s [aimp-discord-presence](https://github.com/Exle/aimp-discord-presence);
