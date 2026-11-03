@@ -32,12 +32,14 @@
 // returned URL must answer 200 with an image/* content type) before reporting
 // success. Distinct images are uploaded once and the returned URL is cached on
 // disk, keyed by the SHA-256 of the bytes that were uploaded - except a cached
-// URL on an ephemeral keyless host, which is re-published to the permanent
-// GitHub host when a token is configured, and revalidated (re-published when
-// dead) otherwise, so a dead cached URL is never sent. A transport
-// failure is retried once after a short pause; host answers (a 412, an empty
-// body) are never retried. Failures are cached briefly too, so a host outage is
-// not hammered from the player's callback.
+// URL on an ephemeral keyless host, which is re-published to Google Drive when
+// the Drive host is active, and revalidated (re-published when dead) otherwise,
+// so a dead cached URL is never sent. A cached raw.githubusercontent.com URL
+// is legacy from the removed GitHub host: it is never reused as-is, but
+// upgraded to Drive when active, else revalidated like an ephemeral URL. A
+// transport failure is retried once after a short pause; host answers (a 412,
+// an empty body) are never retried. Failures are cached briefly too, so a host
+// outage is not hammered from the player's callback.
 //
 // Every call blocks; each HTTP operation gets a ~20 second budget, so an upload
 // attempt plus its retry plus the health check can take longer than that. The
@@ -76,16 +78,14 @@ void SetLogger(void (*logger)(const std::string& line));
 // Reloads whatever the file already holds.
 void Configure(const std::string& cache_path);
 
-// Configures the permanent, user-owned GitHub host. `token` is a fine-grained
-// personal access token; when it is empty the GitHub host is skipped entirely
-// and the chain is exactly the keyless hosts. `repo` is "owner/name" and
-// defaults to nathwn12/aimp-discord-presence-art when empty. The token is
-// never logged, cached, or persisted - only its presence is ever named.
+// Legacy GitHub host, removed. `token` (CoverToken) and `repo` (CoverRepo) are
+// accepted and ignored without error, so an existing AIMP.ini carrying them
+// never fails to load; they enable no host and reach no network.
 void ConfigureAuth(const std::string& token, const std::string& repo);
 
-// Chooses the preferred host. `value` is "auto" (the default), "drive",
-// "github" or "keyless"; anything else is read as "auto". "auto" prefers Drive
-// when its credentials are configured, otherwise GitHub when a token is
+// Chooses the preferred host. `value` is "auto" (the default), "drive" or
+// "keyless"; anything else is read as "auto", and a legacy "github" value
+// reads as "auto" too. "auto" leads with Drive when its credentials are
 // configured. The anonymous keyless hosts always stay last, so a preferred host
 // that fails falls through exactly as the chain did before.
 void ConfigureHost(const std::string& value);

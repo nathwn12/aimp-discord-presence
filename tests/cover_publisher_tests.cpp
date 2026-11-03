@@ -270,23 +270,26 @@ void TestMultipartArithmetic() {
 // --- Upload host list: ordered, with each host's own shape ------------------
 
 void TestHostList() {
-  // Without a token the chain is the keyless one, unchanged in order and size.
+  // Without Drive credentials the chain is the keyless one, unchanged in order
+  // and size.
   CoverPublisher::ConfigureAuth("", "");
-  Check(ConfiguredHostCount() == 3, "host list has exactly three keyless hosts without a token");
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
+  Check(ConfiguredHostCount() == 3, "host list has exactly three keyless hosts without drive creds");
   Check(kBaseUploadHostCount == 3, "the keyless host count constant is three");
   Check(ConfiguredHostName(0) == "catbox.moe",
-        "host 0 without a token is catbox - permanent and first keyless");
+        "host 0 without drive creds is catbox - permanent and first keyless");
   Check(ConfiguredHostName(1) == "uguu.se",
-        "host 1 without a token is uguu - the measured working host");
+        "host 1 without drive creds is uguu - the measured working host");
   Check(ConfiguredHostName(2) == "litter.catbox.moe",
-        "host 2 without a token is litterbox - last as a dormant fallback");
+        "host 2 without drive creds is litterbox - last as a dormant fallback");
   Check(ConfiguredHostName(3).empty(), "an out-of-range host name is empty");
 
   bool github_absent = true;
   for (size_t i = 0; i < ConfiguredHostCount(); ++i) {
     github_absent = github_absent && ConfiguredHostName(i) != "github.com";
   }
-  Check(github_absent, "an empty token omits the GitHub host entirely");
+  Check(github_absent, "no chain without drive creds names a github host");
 
   // Each keyless entry carries its own endpoint and multipart shape.
   Check(std::wstring(kBaseUploadHosts[0].host) == L"catbox.moe" &&
@@ -302,20 +305,20 @@ void TestHostList() {
             kBaseUploadHosts[2].shape == UploadShape::kLitterbox,
         "litterbox owns its endpoint and fileToUpload shape");
 
-  // A configured token prepends the GitHub host: github -> catbox -> uguu ->
-  // litterbox, with no other entry reordered.
-  CoverPublisher::ConfigureAuth("test-token", "");
-  Check(ConfiguredHostCount() == 4, "a configured token adds exactly one host");
-  Check(ConfiguredHostName(0) == "github.com",
-        "the GitHub host is FIRST when a token is configured");
-  Check(ConfiguredHostName(1) == "catbox.moe", "catbox stays second when GitHub is present");
-  Check(ConfiguredHostName(2) == "uguu.se", "uguu stays third when GitHub is present");
-  Check(ConfiguredHostName(3) == "litter.catbox.moe",
-        "litterbox stays last when GitHub is present");
+  // A legacy token changes nothing: the GitHub host is gone, so ConfigureAuth
+  // is ignored and the chain stays the three keyless hosts.
+  CoverPublisher::ConfigureAuth("test-token", "owner/repo");
+  Check(ConfiguredHostCount() == 3, "a legacy token adds no host");
+  Check(ConfiguredHostName(0) == "catbox.moe", "catbox stays first with a legacy token");
+  Check(ConfiguredHostName(1) == "uguu.se", "uguu stays second with a legacy token");
+  Check(ConfiguredHostName(2) == "litter.catbox.moe",
+        "litterbox stays last with a legacy token");
 
-  // Restore the no-token default so the later tests still see the keyless chain.
+  // Restore the default so the later tests still see the keyless chain.
   CoverPublisher::ConfigureAuth("", "");
-  Check(ConfiguredHostCount() == 3, "clearing the token restores the keyless chain");
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
+  Check(ConfiguredHostCount() == 3, "resetting the hosts restores the keyless chain");
 }
 
 // --- Multipart shapes differ correctly per host ----------------------------
@@ -385,141 +388,75 @@ void TestCentreSquareCrop() {
         "an already-square image over 256 KB re-encodes in place at 512");
 }
 
-// --- GitHub host configuration ----------------------------------------------
+// --- Legacy auth is ignored; no GitHub host can enter the chain ------------
+//
+// The GitHub host is gone: only Google Drive plus the keyless hosts remain.
+// CoverToken/CoverRepo are accepted without error and enable nothing, a legacy
+// CoverHost=github reads as auto, and cached raw.githubusercontent.com URLs
+// are legacy (never reused). This test pins all three, whatever the
+// credentials, so no configuration can smuggle the removed host back in.
 
-void TestGitHubHostConfig() {
+void TestLegacyAuthIgnored() {
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
+
   CoverPublisher::ConfigureAuth("", "");
-  Check(ConfiguredHostCount() == 3, "github config: no token -> the keyless chain");
+  Check(ConfiguredHostCount() == 3, "legacy auth: empty values -> the keyless chain");
 
-  CoverPublisher::ConfigureAuth("test-token", "octo/art");
-  Check(ConfiguredHostCount() == 4, "github config: token + repo -> GitHub added");
-  Check(ConfiguredHostName(0) == "github.com", "github config: GitHub is first");
-
-  // A malformed repo skips GitHub rather than building a nonsense target.
-  CoverPublisher::ConfigureAuth("test-token", "no-slash-here");
-  Check(ConfiguredHostCount() == 3, "github config: a malformed repo has no GitHub host");
-
-  // An empty repo falls back to the default owner/name.
-  CoverPublisher::ConfigureAuth("test-token", "");
-  Check(ConfiguredHostCount() == 4, "github config: an empty repo uses the default repo");
+  // Every legacy token/repo shape is ignored without error: no host is added,
+  // and none is ever named github.com.
+  const char* tokens[] = {"test-token", "", "test-token", "test-token"};
+  const char* repos[] = {"octo/art", "", "no-slash-here", "owner/repo"};
+  for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); ++i) {
+    CoverPublisher::ConfigureAuth(tokens[i], repos[i]);
+    Check(ConfiguredHostCount() == 3, "legacy auth: a token/repo pair adds no host");
+    bool named = false;
+    for (size_t h = 0; h < ConfiguredHostCount(); ++h) {
+      named = named || ConfiguredHostName(h) == "github.com";
+    }
+    Check(!named, "legacy auth: no host is ever named github.com");
+  }
 
   CoverPublisher::ConfigureAuth("", "");
 }
 
-// --- GitHub request shape ---------------------------------------------------
+void TestNoGitHubHost() {
+  // Even with Drive credentials (the fullest chain), no host is github.com,
+  // and the pinned legacy policy still reads as auto.
+  CoverPublisher::ConfigureAuth("test-token", "owner/repo");
+  CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
+  const char* policies[] = {"auto", "drive", "keyless", "github", "GITHUB", " Drive "};
+  for (size_t i = 0; i < sizeof(policies) / sizeof(policies[0]); ++i) {
+    CoverPublisher::ConfigureHost(policies[i]);
+    bool named = false;
+    for (size_t h = 0; h < ConfiguredHostCount(); ++h) {
+      const std::string name = ConfiguredHostName(h);
+      named = named || name == "github.com";
+      Check(name == "drive.google.com" || name == "catbox.moe" || name == "uguu.se" ||
+                name == "litter.catbox.moe",
+            std::string("no-github: every host under CoverHost=") + policies[i] +
+                " is drive or keyless");
+    }
+    Check(!named, std::string("no-github: CoverHost=") + policies[i] + " names no github host");
+  }
+  Check(ParseCoverHostPolicy("github") == CoverHostPolicy::kAuto,
+        "no-github: a github pin parses as auto");
+  Check(ParseCoverHostPolicy("GITHUB") == CoverHostPolicy::kAuto,
+        "no-github: the github pin is case-insensitive");
 
-void TestGitHubRequestShape() {
-  const std::string token = "test-token";
-  const std::wstring owner = L"octo";
-  const std::wstring repo = L"art";
-  const std::string name = Sha256Hex(std::vector<unsigned char>{'c', 'o', 'v', 'e', 'r'});
-  const std::vector<unsigned char> image = {'a', 'b', 'c'};
-  const GitHubRequest request = BuildGitHubRequest(token, owner, repo, name, image);
+  // A legacy cached URL names no host: it must upgrade or revalidate, never be
+  // served as a github.com hit.
+  const std::string legacy_name(64, 'a');
+  const std::string legacy_url =
+      "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence-art/main/covers/" +
+      legacy_name + ".jpg";
+  Check(IsLegacyGitHubCachedUrl(legacy_url), "no-github: the legacy url is recognised");
+  Check(HostNameForUrl(legacy_url).empty(), "no-github: the legacy url names no host");
+  Check(!LooksLikeUploadUrl(legacy_url), "no-github: the legacy url is not a fresh upload url");
 
-  Check(request.method == L"PUT", "github request is a PUT");
-  Check(request.host == L"api.github.com", "github request targets api.github.com");
-  const std::wstring expected_path =
-      L"/repos/octo/art/contents/covers/" + Utils::ToWString(name) + L".jpg";
-  Check(request.path == expected_path,
-        "github request path is /repos/<owner>/<repo>/contents/covers/<sha>.jpg");
-  Check(request.headers.find(L"Authorization: Bearer test-token") != std::wstring::npos,
-        "github request carries the bearer token");
-  Check(request.headers.find(L"Content-Type: application/json") != std::wstring::npos,
-        "github request announces a JSON body");
-
-  // The token is confined to the Authorization header: never in the target or
-  // the body.
-  Check(request.path.find(L"test-token") == std::wstring::npos,
-        "the token is not in the request target");
-  Check(request.body.find("test-token") == std::string::npos,
-        "the token is not in the JSON body");
-  Check(request.body.find("\"branch\":\"main\"") != std::string::npos,
-        "github body commits to the main branch");
-  Check(request.body.find("\"content\":\"") != std::string::npos,
-        "github body carries base64 content");
-  Check(request.body.find(name.substr(0, 7)) != std::string::npos,
-        "github commit message names the cover by its short hash");
-
-  Check(Base64Encode(reinterpret_cast<const unsigned char*>("abc"), 3) == "YWJj",
-        "base64 abc known answer");
-
-  // No other host's request carries an Authorization header: the multipart
-  // bodies (the only other payloads) never contain one.
-  const std::string boundary = "----authtest";
-  const std::string catbox = BuildMultipartBody(boundary, "image/png", image, UploadShape::kCatbox);
-  const std::string uguu = BuildMultipartBody(boundary, "image/png", image, UploadShape::kUguu);
-  const std::string litterbox =
-      BuildMultipartBody(boundary, "image/png", image, UploadShape::kLitterbox);
-  Check(catbox.find("Authorization") == std::string::npos &&
-            uguu.find("Authorization") == std::string::npos &&
-            litterbox.find("Authorization") == std::string::npos,
-        "only the GitHub host carries an Authorization header");
-}
-
-// --- GitHub contents response classification --------------------------------
-
-void TestGitHubResponseClassification() {
-  const std::wstring owner = L"nwhn12";
-  const std::wstring repo = L"aimp-discord-presence-art";
-  const std::string name = Sha256Hex(std::vector<unsigned char>{'c', 'o', 'v', 'e', 'r'});
-  const std::string download =
-      "https://raw.githubusercontent.com/nwhn12/aimp-discord-presence-art/main/covers/" + name +
-      ".jpg";
-
-  // 201/200 success: the url is content.download_url, never the raw JSON.
-  const std::string ok_body =
-      "{\"content\":{\"name\":\"" + name + ".jpg\",\"download_url\":\"" + download +
-      "\"},\"commit\":{\"sha\":\"deadbeef\"}}";
-  const Result created = ClassifyGitHubResponse(201, ok_body, owner, repo, name);
-  Check(created.ok && created.url == download,
-        "github 201 + download_url -> success with THAT url");
-  const Result ok200 = ClassifyGitHubResponse(200, ok_body, owner, repo, name);
-  Check(ok200.ok && ok200.url == download, "github 200 + download_url -> success with THAT url");
-  Check(created.url != ok_body, "the raw JSON body is never returned as the url");
-
-  // No download_url -> failure, never a url.
-  const std::string no_download = "{\"content\":{\"name\":\"" + name + ".jpg\"},\"commit\":{}}";
-  const Result missing = ClassifyGitHubResponse(200, no_download, owner, repo, name);
-  Check(!missing.ok && missing.url.empty(), "a JSON body without download_url is a failure");
-  Check(missing.reason.find("200") != std::string::npos,
-        "the missing-download_url failure names the status");
-
-  // A download_url on another owner/repo is rejected (owner/repo are pinned).
-  const std::string foreign =
-      "{\"content\":{\"download_url\":\"https://raw.githubusercontent.com/evil/art/main/covers/" +
-      name + ".jpg\"}}";
-  const Result foreign_result = ClassifyGitHubResponse(200, foreign, owner, repo, name);
-  Check(!foreign_result.ok, "a download_url for another owner/repo is rejected");
-
-  // A bare (non-JSON) body that happens to be a url is never adopted.
-  const Result bare = ClassifyGitHubResponse(200, download, owner, repo, name);
-  Check(!bare.ok, "a bare url body is not parsed as a download_url");
-
-  // The immutable file already exists: 422/409 -> success via the raw URL.
-  const std::string raw = GitHubRawUrl(owner, repo, name);
-  const Result exists422 =
-      ClassifyGitHubResponse(422, "{\"message\":\"already exists\"}", owner, repo, name);
-  Check(exists422.ok && exists422.url == raw,
-        "github 422 -> success via the constructed raw url");
-  const Result exists409 = ClassifyGitHubResponse(409, "", owner, repo, name);
-  Check(exists409.ok && exists409.url == raw,
-        "github 409 -> success via the constructed raw url");
-
-  // Bad auth: failure named by status only; the body is never echoed.
-  const Result unauthorized =
-      ClassifyGitHubResponse(401, "{\"message\":\"Bad credentials test-token\"}", owner, repo, name);
-  Check(!unauthorized.ok && unauthorized.reason == "http-401",
-        "github 401 -> failure named by status");
-  Check(unauthorized.reason.find("test-token") == std::string::npos && unauthorized.url.empty(),
-        "a 401 never leaks the body or the token into the result");
-  const Result forbidden = ClassifyGitHubResponse(403, "rate limited test-token", owner, repo, name);
-  Check(!forbidden.ok && forbidden.reason == "http-403",
-        "github 403 -> failure named by status");
-  Check(forbidden.reason.find("test-token") == std::string::npos,
-        "a 403 never leaks the token into the reason");
-
-  Check(created.url.find("test-token") == std::string::npos,
-        "the success url never contains the token");
+  CoverPublisher::ConfigureAuth("", "");
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
 }
 
 // --- catbox host ------------------------------------------------------------
@@ -555,48 +492,44 @@ void TestCatboxHost() {
   Check(LooksLikeUploadUrl(catbox_url), "the catbox url is a recognised upload url");
 }
 
-// --- The token never leaks --------------------------------------------------
+// --- The Drive secret never leaks ---------------------------------------------
 
-void TestTokenNeverLeaks() {
-  const std::string token = "test-token";
-  const std::wstring owner = L"nwhn12";
-  const std::wstring repo = L"aimp-discord-presence-art";
-  const std::string name = Sha256Hex(std::vector<unsigned char>{'l', 'o', 'g'});
-
+void TestDriveSecretNeverLeaks() {
   g_log_lines.clear();
   CoverPublisher::SetLogger(CaptureLog);
 
-  // Positive control: the recorder is live before we conclude anything from its
-  // silence, and an empty token is logged as a state, never a value.
-  CoverPublisher::ConfigureAuth("", "");
-  LogGitHubAuthState();
+  // Positive control: the recorder is live before we conclude anything from
+  // its silence.
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
+  CoverPublisher::LogHostConfiguration();
   Check(!g_log_lines.empty(), "the log recorder is live (positive control)");
-  Check(g_log_lines.back().find("auth=absent") != std::string::npos,
-        "an empty token logs auth=absent, never a value");
 
-  // With a token, only its presence is named.
-  CoverPublisher::ConfigureAuth(token, "");
-  LogGitHubAuthState();
-  LogGitHubAuthRejected("403");
-  const Result rejected =
-      ClassifyGitHubResponse(401, "{\"message\":\"" + token + "\"}", owner, repo, name);
+  // With credentials, every emitted line - the host line, the drive state, a
+  // drive failure - names states and reasons only, never a value.
+  CoverPublisher::ConfigureDrive("client-id-value", "GOCSPX-secret-value", "C:\\temp\\state.txt");
+  CoverPublisher::ConfigureHost("drive");
+  CoverPublisher::LogHostConfiguration();
+  LogDriveHostState();
   PreparedImage prepared;
-  LogHostFailure(rejected.reason, HostListToken(), 2, prepared);
+  LogHostFailure("drive-http-403", HostListToken(), 2, prepared);
   CoverPublisher::SetLogger(nullptr);
 
-  bool token_in_log = false;
+  bool secret_in_log = false;
   for (const std::string& line : g_log_lines) {
-    token_in_log = token_in_log || line.find(token) != std::string::npos;
+    secret_in_log = secret_in_log || line.find("GOCSPX") != std::string::npos ||
+                    line.find("secret-value") != std::string::npos ||
+                    line.find("client-id-value") != std::string::npos;
   }
-  Check(g_log_lines.size() >= 3,
-        "the auth-state, auth-rejected and failure lines were all recorded");
-  Check(!token_in_log, "no log line contains the token");
-  Check(rejected.reason.find(token) == std::string::npos && rejected.url.empty(),
-        "the result carries neither the token nor the body");
-  Check(HostListToken().find(token) == std::string::npos,
-        "the host-list token names hosts only, never the access token");
+  Check(g_log_lines.size() >= 4,
+        "the host line, drive state and failure lines were all recorded");
+  Check(!secret_in_log, "no log line contains the client id or secret");
+  Check(HostListToken().find("GOCSPX") == std::string::npos &&
+            HostListToken().find("secret") == std::string::npos,
+        "the host-list token names hosts only, never a credential");
 
-  CoverPublisher::ConfigureAuth("", "");
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
 }
 
 // --- The four-layer order is unchanged by the host chain --------------------
@@ -753,8 +686,8 @@ void TestCardLargeImagePlaceholder() {
 
   // The placeholder URL is pinned once, so it cannot drift silently.
   Check(std::string(kTransparentLargeImageUrl) ==
-            "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence-art/"
-            "main/covers/transparent.png",
+            "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence/"
+            "main/.github/aimp_icons/transparent.png",
         "card: the transparent placeholder url is pinned");
   // AppendImageField truncates at 300 characters.
   Check(std::strlen(kTransparentLargeImageUrl) < 300,
@@ -1503,24 +1436,25 @@ void TestCache(const std::wstring& directory) {
   RemoveDirectoryW(directory.c_str());
 }
 
-// --- Ephemeral cache entries: upgrade vs revalidate --------------------------
+// --- Ephemeral and legacy cache entries: upgrade vs revalidate --------------
 //
-// A cache hit on a keyless URL is never trusted blindly. With the permanent
-// GitHub host active the local bytes are re-published there (the Death Note
-// case: a dead cached uguu URL becomes a raw.githubusercontent URL and the
-// cache is updated); without a token the stored URL is revalidated and a dead
-// entry falls through to a fresh keyless upload. The planning is pure, so it
-// is asserted here; the network legs (GitHub PUT, health-check GET, fresh
-// upload) are the existing proven transports.
+// A cache hit on a keyless URL is never trusted blindly. With the Drive host
+// active the local bytes are re-published there and the cache is updated;
+// without Drive credentials the stored URL is revalidated and a dead entry
+// falls through to a fresh keyless upload. A legacy GitHub URL (from the
+// removed host) is never reused: it upgrades to Drive when active, else it
+// revalidates like an ephemeral URL. The planning is pure, so it is asserted
+// here; the network legs (Drive upload, health-check GET, fresh upload) are
+// the existing proven transports.
 
 void TestCachedUrlPlan() {
   const std::string uguu_url = "https://n.uguu.se/nUoxUKCo.png";
   const std::string catbox_url = "https://files.catbox.moe/a1b2c3.png";
   const std::string litterbox_url = "https://litter.catbox.moe/abc123.png";
-  const std::string github_name(64, 'a');
-  const std::string github_url =
+  const std::string legacy_name(64, 'a');
+  const std::string legacy_url =
       "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence-art/main/covers/" +
-      github_name + ".jpg";
+      legacy_name + ".jpg";
 
   // Every keyless host's URL is ephemeral, whatever the subdomain or extension.
   Check(IsEphemeralCachedUrl(uguu_url), "plan: a uguu url is ephemeral");
@@ -1528,43 +1462,55 @@ void TestCachedUrlPlan() {
         "plan: a uguu url on another subdomain is ephemeral");
   Check(IsEphemeralCachedUrl(catbox_url), "plan: a catbox url is ephemeral");
   Check(IsEphemeralCachedUrl(litterbox_url), "plan: a litterbox url is ephemeral");
-  Check(!IsEphemeralCachedUrl(github_url), "plan: a github raw url is not ephemeral");
-  Check(IsGitHubCachedUrl(github_url), "plan: a github raw url is durable");
-  Check(!IsGitHubCachedUrl(uguu_url), "plan: a uguu url is not durable");
-  Check(LooksLikeUploadUrl(github_url), "plan: the github raw url is a recognised upload url");
+  Check(!IsEphemeralCachedUrl(legacy_url), "plan: a legacy github url is not keyless-ephemeral");
+  Check(IsLegacyGitHubCachedUrl(legacy_url), "plan: a legacy github url is recognised");
+  Check(!IsLegacyGitHubCachedUrl(uguu_url), "plan: a uguu url is not legacy");
+  Check(!LooksLikeUploadUrl(legacy_url), "plan: the legacy url is not a fresh upload url");
 
-  // With the GitHub host active, every ephemeral hit is upgraded.
-  Check(PlanCachedUrl(uguu_url, true) == CachedUrlAction::kUpgradeToGitHub,
-        "plan: uguu hit + token -> re-publish to github");
-  Check(PlanCachedUrl(catbox_url, true) == CachedUrlAction::kUpgradeToGitHub,
-        "plan: catbox hit + token -> re-publish to github");
-  Check(PlanCachedUrl(litterbox_url, true) == CachedUrlAction::kUpgradeToGitHub,
-        "plan: litterbox hit + token -> re-publish to github");
-  Check(PlanCachedUrl(github_url, true) == CachedUrlAction::kUse,
-        "plan: github hit + token -> used as-is, never re-uploaded");
+  // With Drive active, every ephemeral or legacy hit is upgraded.
+  Check(PlanCachedUrl(uguu_url, true) == CachedUrlAction::kUpgradeToPermanent,
+        "plan: uguu hit + drive -> re-publish to drive");
+  Check(PlanCachedUrl(catbox_url, true) == CachedUrlAction::kUpgradeToPermanent,
+        "plan: catbox hit + drive -> re-publish to drive");
+  Check(PlanCachedUrl(litterbox_url, true) == CachedUrlAction::kUpgradeToPermanent,
+        "plan: litterbox hit + drive -> re-publish to drive");
+  Check(PlanCachedUrl(legacy_url, true) == CachedUrlAction::kUpgradeToPermanent,
+        "plan: legacy hit + drive -> re-publish to drive, never reused");
 
-  // Without a token, an ephemeral hit is revalidated, never trusted blindly.
+  // Without Drive, an ephemeral or legacy hit is revalidated, never trusted.
   Check(PlanCachedUrl(uguu_url, false) == CachedUrlAction::kRevalidate,
-        "plan: uguu hit, no token -> revalidate");
+        "plan: uguu hit, no drive -> revalidate");
   Check(PlanCachedUrl(catbox_url, false) == CachedUrlAction::kRevalidate,
-        "plan: catbox hit, no token -> revalidate");
+        "plan: catbox hit, no drive -> revalidate");
   Check(PlanCachedUrl(litterbox_url, false) == CachedUrlAction::kRevalidate,
-        "plan: litterbox hit, no token -> revalidate");
-  Check(PlanCachedUrl(github_url, false) == CachedUrlAction::kUse,
-        "plan: github hit, no token -> still used as-is");
+        "plan: litterbox hit, no drive -> revalidate");
+  Check(PlanCachedUrl(legacy_url, false) == CachedUrlAction::kRevalidate,
+        "plan: legacy hit, no drive -> revalidate, never reused");
 
-  // The active flag mirrors the host list: a token with a malformed repo is
-  // present-but-unused, exactly like no token.
-  CoverPublisher::ConfigureAuth("test-token", "");
-  Check(GitHubUploadActive(), "plan: token + default repo -> github active");
-  Check(PlanCachedUrl(uguu_url, GitHubUploadActive()) == CachedUrlAction::kUpgradeToGitHub,
+  // The active flag mirrors the host list: a legacy token changes nothing, and
+  // only Drive credentials flip the decision.
+  CoverPublisher::ConfigureAuth("test-token", "owner/repo");
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
+  Check(!DriveUploadActive(), "plan: a legacy token alone leaves drive inactive");
+  Check(PlanCachedUrl(uguu_url, DriveUploadActive()) == CachedUrlAction::kRevalidate,
+        "plan: a legacy token still revalidates");
+  Check(PlanCachedUrl(legacy_url, DriveUploadActive()) == CachedUrlAction::kRevalidate,
+        "plan: a legacy hit with only a legacy token revalidates");
+  CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
+  Check(DriveUploadActive(), "plan: drive credentials -> drive active");
+  Check(PlanCachedUrl(uguu_url, DriveUploadActive()) == CachedUrlAction::kUpgradeToPermanent,
         "plan: the live active flag upgrades an ephemeral hit");
-  CoverPublisher::ConfigureAuth("test-token", "no-slash-here");
-  Check(!GitHubUploadActive(), "plan: token + malformed repo -> github inactive");
-  Check(PlanCachedUrl(uguu_url, GitHubUploadActive()) == CachedUrlAction::kRevalidate,
-        "plan: present-but-unused token still revalidates");
+  Check(PlanCachedUrl(legacy_url, DriveUploadActive()) == CachedUrlAction::kUpgradeToPermanent,
+        "plan: the live active flag upgrades a legacy hit");
+  CoverPublisher::ConfigureHost("keyless");
+  Check(!DriveUploadActive(), "plan: a keyless pin leaves drive inactive");
+  Check(PlanCachedUrl(legacy_url, DriveUploadActive()) == CachedUrlAction::kRevalidate,
+        "plan: a keyless pin revalidates a legacy hit");
   CoverPublisher::ConfigureAuth("", "");
-  Check(!GitHubUploadActive(), "plan: no token -> github inactive");
+  CoverPublisher::ConfigureDrive("", "", "");
+  CoverPublisher::ConfigureHost("auto");
+  Check(!DriveUploadActive(), "plan: no credentials -> drive inactive");
 }
 
 // --- Google Drive host: PKCE, consent URL, sidecar, body, URL, policy --------
@@ -1755,9 +1701,9 @@ void TestDriveLh3Url() {
   Check(LooksLikeUploadUrl(url), "drive url: recognised as an upload url");
   Check(!IsEphemeralCachedUrl(url), "drive url: a cached drive url is durable");
   Check(PlanCachedUrl(url, true) == CachedUrlAction::kUse,
-        "drive url: reused as-is even with github active");
+        "drive url: reused as-is even with drive active");
   Check(PlanCachedUrl(url, false) == CachedUrlAction::kUse,
-        "drive url: reused as-is without a token");
+        "drive url: reused as-is without drive credentials");
   Check(!LooksLikeUploadUrl(url + "=w1024"), "drive url: a size suffix is not the cached form");
   Check(!LooksLikeUploadUrl("https://lh3.googleusercontent.com.evil.test/d/" + id),
         "drive url: a lookalike host is rejected");
@@ -1813,7 +1759,10 @@ void TestCoverHostSelection() {
   Check(ParseCoverHostPolicy("auto") == CoverHostPolicy::kAuto, "policy: auto reads as auto");
   Check(ParseCoverHostPolicy(" Drive ") == CoverHostPolicy::kDrive,
         "policy: drive is trimmed and case-insensitive");
-  Check(ParseCoverHostPolicy("GITHUB") == CoverHostPolicy::kGithub, "policy: github reads as github");
+  Check(ParseCoverHostPolicy("github") == CoverHostPolicy::kAuto,
+        "policy: a legacy github pin reads as auto");
+  Check(ParseCoverHostPolicy("GITHUB") == CoverHostPolicy::kAuto,
+        "policy: the legacy github pin is case-insensitive");
   Check(ParseCoverHostPolicy("keyless") == CoverHostPolicy::kKeyless,
         "policy: keyless reads as keyless");
   Check(ParseCoverHostPolicy("nonsense") == CoverHostPolicy::kAuto, "policy: a typo reads as auto");
@@ -1821,30 +1770,25 @@ void TestCoverHostSelection() {
   struct Row {
     CoverHostPolicy policy;
     bool drive_available;
-    bool github_available;
     bool want_drive;
-    bool want_github;
     const char* label;
   };
   const Row rows[] = {
-      {CoverHostPolicy::kAuto, false, false, false, false, "auto, nothing configured -> keyless only"},
-      {CoverHostPolicy::kAuto, true, false, true, false, "auto with drive creds -> drive"},
-      {CoverHostPolicy::kAuto, false, true, false, true, "auto with a token -> github"},
-      {CoverHostPolicy::kAuto, true, true, true, false, "auto with both -> drive, no second upload"},
-      {CoverHostPolicy::kDrive, true, true, true, false, "drive pinned -> drive"},
-      {CoverHostPolicy::kDrive, false, true, false, false, "drive pinned without creds -> keyless"},
-      {CoverHostPolicy::kGithub, true, true, false, true, "github pinned -> github"},
-      {CoverHostPolicy::kGithub, true, false, false, false, "github pinned without a token -> keyless"},
-      {CoverHostPolicy::kKeyless, true, true, false, false, "keyless pinned -> no authenticated host"},
+      {CoverHostPolicy::kAuto, false, false, "auto, nothing configured -> keyless only"},
+      {CoverHostPolicy::kAuto, true, true, "auto with drive creds -> drive"},
+      {CoverHostPolicy::kDrive, true, true, "drive pinned -> drive"},
+      {CoverHostPolicy::kDrive, false, false, "drive pinned without creds -> keyless"},
+      {CoverHostPolicy::kKeyless, true, false, "keyless pinned -> no authenticated host"},
+      {CoverHostPolicy::kKeyless, false, false, "keyless pinned, nothing configured -> keyless only"},
   };
   for (const Row& row : rows) {
-    const HostChainPlan plan = PlanHostChain(row.policy, row.drive_available, row.github_available);
-    Check(plan.drive == row.want_drive && plan.github == row.want_github,
-          std::string("policy: ") + row.label);
+    const HostChainPlan plan = PlanHostChain(row.policy, row.drive_available);
+    Check(plan.drive == row.want_drive, std::string("policy: ") + row.label);
   }
 
-  // The live chain, through the same configuration the plugin uses.
-  CoverPublisher::ConfigureAuth("test-token", "");
+  // The live chain, through the same configuration the plugin uses. A legacy
+  // token is configured throughout: it must change nothing.
+  CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
   CoverPublisher::ConfigureHost("keyless");
   Check(ConfiguredHostCount() == 3, "policy: keyless pin keeps the three anonymous hosts");
@@ -1854,16 +1798,23 @@ void TestCoverHostSelection() {
   Check(DriveUploadActive(), "policy: drive pin with credentials -> active");
   Check(ConfiguredHostName(0) == "drive.google.com", "policy: drive pin leads with drive");
   Check(ConfiguredHostCount() == 4,
-        "policy: drive pinned replaces github in the chain; keyless still last");
+        "policy: drive pinned leads the chain; keyless still last");
 
   CoverPublisher::ConfigureHost("auto");
   Check(ConfiguredHostName(0) == "drive.google.com",
         "policy: auto prefers drive when configured");
 
+  CoverPublisher::ConfigureHost("github");
+  Check(ConfiguredHostName(0) == "drive.google.com",
+        "policy: a legacy github pin behaves as auto with drive configured");
+
   CoverPublisher::ConfigureDrive("", "", "");
   Check(!DriveUploadActive(), "policy: empty drive credentials -> inactive");
-  Check(ConfiguredHostCount() == 4,
-        "policy: with drive off and github on the chain is github + the three keyless hosts");
+  Check(ConfiguredHostCount() == 3,
+        "policy: with drive off the chain is the three keyless hosts");
+  CoverPublisher::ConfigureHost("github");
+  Check(ConfiguredHostCount() == 3,
+        "policy: a legacy github pin without drive creds is the keyless chain");
 
   CoverPublisher::ConfigureHost("auto");
   CoverPublisher::ConfigureAuth("", "");
@@ -1915,36 +1866,28 @@ void TestDrivePermissionClassification() {
 // --- Host policy on the cache-upgrade path ---------------------------------
 
 void TestCacheUpgradePolicy() {
-  // keyless must never reach GitHub or Drive, whatever the credentials.
-  const std::vector<PermanentHost> keyless =
-      PlanCacheUpgrade(CoverHostPolicy::kKeyless, true, true);
+  // keyless must never reach Drive, whatever the credentials.
+  const std::vector<PermanentHost> keyless = PlanCacheUpgrade(CoverHostPolicy::kKeyless, true);
   Check(keyless.empty(), "upgrade policy: keyless selects no permanent host at all");
 
-  // auto with Drive credentials yields Drive first, and does not also try GitHub.
-  const std::vector<PermanentHost> auto_drive =
-      PlanCacheUpgrade(CoverHostPolicy::kAuto, true, true);
+  // auto with Drive credentials yields Drive; without them there is no upgrade.
+  const std::vector<PermanentHost> auto_drive = PlanCacheUpgrade(CoverHostPolicy::kAuto, true);
   Check(auto_drive.size() == 1 && auto_drive[0] == PermanentHost::kDrive,
-        "upgrade policy: auto + Drive creds upgrades to Drive first");
+        "upgrade policy: auto + Drive creds upgrades to Drive");
 
-  const std::vector<PermanentHost> auto_github =
-      PlanCacheUpgrade(CoverHostPolicy::kAuto, false, true);
-  Check(auto_github.size() == 1 && auto_github[0] == PermanentHost::kGitHub,
-        "upgrade policy: auto without Drive creds upgrades to GitHub");
-
-  Check(PlanCacheUpgrade(CoverHostPolicy::kAuto, false, false).empty(),
+  Check(PlanCacheUpgrade(CoverHostPolicy::kAuto, false).empty(),
         "upgrade policy: auto with no credentials offers no upgrade");
 
-  const std::vector<PermanentHost> github =
-      PlanCacheUpgrade(CoverHostPolicy::kGithub, true, true);
-  Check(github.size() == 1 && github[0] == PermanentHost::kGitHub,
-        "upgrade policy: CoverHost=github yields GitHub first");
+  // A legacy github pin reads as auto, so it upgrades exactly like auto.
+  const std::vector<PermanentHost> legacy = PlanCacheUpgrade(ParseCoverHostPolicy("github"), true);
+  Check(legacy.size() == 1 && legacy[0] == PermanentHost::kDrive,
+        "upgrade policy: a legacy github pin upgrades to Drive like auto");
 
-  const std::vector<PermanentHost> drive =
-      PlanCacheUpgrade(CoverHostPolicy::kDrive, true, true);
+  const std::vector<PermanentHost> drive = PlanCacheUpgrade(CoverHostPolicy::kDrive, true);
   Check(drive.size() == 1 && drive[0] == PermanentHost::kDrive,
-        "upgrade policy: CoverHost=drive yields Drive first");
+        "upgrade policy: CoverHost=drive yields Drive");
 
-  Check(PlanCacheUpgrade(CoverHostPolicy::kDrive, false, true).empty(),
+  Check(PlanCacheUpgrade(CoverHostPolicy::kDrive, false).empty(),
         "upgrade policy: drive pinned without credentials offers no upgrade");
 
   // The cache action follows the same decision: keyless revalidates instead of
@@ -1955,8 +1898,9 @@ void TestCacheUpgradePolicy() {
   Check(PlanCachedUrl(ephemeral, !auto_drive.empty()) == CachedUrlAction::kUpgradeToPermanent,
         "upgrade policy: auto + Drive upgrades an ephemeral hit");
 
-  // The same decision through the live configuration the plugin uses.
-  CoverPublisher::ConfigureAuth("test-token", "");
+  // The same decision through the live configuration the plugin uses. A legacy
+  // token rides along: it must change nothing.
+  CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
   CoverPublisher::ConfigureHost("keyless");
   Check(CurrentUpgradeHosts().empty(),
@@ -1964,7 +1908,7 @@ void TestCacheUpgradePolicy() {
   CoverPublisher::ConfigureHost("auto");
   const std::vector<PermanentHost> live = CurrentUpgradeHosts();
   Check(live.size() == 1 && live[0] == PermanentHost::kDrive,
-        "upgrade policy: the live auto chain upgrades to Drive first");
+        "upgrade policy: the live auto chain upgrades to Drive");
 
   CoverPublisher::ConfigureDrive("", "", "");
   CoverPublisher::ConfigureHost("auto");
@@ -2019,45 +1963,36 @@ void TestHostConfigLine() {
   HostConfigSummary auto_all;
   auto_all.policy = CoverHostPolicy::kAuto;
   auto_all.drive_usable = true;
-  auto_all.github_usable = true;
-  Check(FormatHostConfigLine(auto_all) ==
-            "local-cover hosts policy=auto drive=on github=off github-reason=policy keyless=on",
-        "host line: auto with Drive credentials leads with Drive and says why GitHub is idle");
+  Check(FormatHostConfigLine(auto_all) == "local-cover hosts policy=auto drive=on keyless=on",
+        "host line: auto with Drive credentials leads with Drive");
 
   HostConfigSummary pinned_drive;
   pinned_drive.policy = CoverHostPolicy::kDrive;
   pinned_drive.drive_usable = true;
-  pinned_drive.github_usable = true;
   Check(FormatHostConfigLine(pinned_drive) ==
-            "local-cover hosts policy=drive drive=on github=off github-reason=policy keyless=on",
-        "host line: CoverHost=drive reports drive on, github off by policy");
+            "local-cover hosts policy=drive drive=on keyless=on",
+        "host line: CoverHost=drive reports drive on");
 
   HostConfigSummary drive_missing;
   drive_missing.policy = CoverHostPolicy::kDrive;
   drive_missing.drive_reason = DriveUnavailableReason(false, false, true);
-  drive_missing.github_usable = true;
   Check(FormatHostConfigLine(drive_missing) ==
-            "local-cover hosts policy=drive drive=off drive-reason=no-credentials "
-            "github=off github-reason=policy keyless=on",
+            "local-cover hosts policy=drive drive=off drive-reason=no-credentials keyless=on",
         "host line: a pinned Drive policy with no credentials names the reason");
 
   HostConfigSummary keyless;
   keyless.policy = CoverHostPolicy::kKeyless;
   keyless.drive_usable = true;
-  keyless.github_usable = true;
   Check(FormatHostConfigLine(keyless) ==
-            "local-cover hosts policy=keyless drive=off drive-reason=policy "
-            "github=off github-reason=policy keyless=on",
-        "host line: a keyless policy reports both authenticated hosts off by policy");
+            "local-cover hosts policy=keyless drive=off drive-reason=policy keyless=on",
+        "host line: a keyless policy reports drive off by policy");
 
-  HostConfigSummary github_only;
-  github_only.policy = CoverHostPolicy::kAuto;
-  github_only.github_usable = true;
-  github_only.drive_reason = DriveUnavailableReason(true, true, false);
-  Check(FormatHostConfigLine(github_only) ==
-            "local-cover hosts policy=auto drive=off drive-reason=no-state-path "
-            "github=on keyless=on",
-        "host line: an unusable sidecar path is named, and GitHub carries the chain");
+  HostConfigSummary drive_only;
+  drive_only.policy = CoverHostPolicy::kAuto;
+  drive_only.drive_reason = DriveUnavailableReason(true, true, false);
+  Check(FormatHostConfigLine(drive_only) ==
+            "local-cover hosts policy=auto drive=off drive-reason=no-state-path keyless=on",
+        "host line: an unusable sidecar path is named");
 
   // Reason tokens come from booleans only, so no configured value can leak.
   Check(DriveUnavailableReason(false, false, false) == "no-credentials",
@@ -2070,24 +2005,20 @@ void TestHostConfigLine() {
         "host line: a missing sidecar path is named");
   Check(DriveUnavailableReason(true, true, true).empty(),
         "host line: a usable Drive has no reason token");
-  Check(GitHubUnavailableReason(false, true) == "no-token",
-        "host line: a missing GitHub token is named");
-  Check(GitHubUnavailableReason(true, false) == "bad-repo",
-        "host line: a malformed repo is named");
-  Check(GitHubUnavailableReason(true, true).empty(),
-        "host line: a usable GitHub has no reason token");
   Check(PolicyName(CoverHostPolicy::kAuto) == "auto" &&
             PolicyName(CoverHostPolicy::kDrive) == "drive" &&
-            PolicyName(CoverHostPolicy::kGithub) == "github" &&
             PolicyName(CoverHostPolicy::kKeyless) == "keyless",
         "host line: every policy has its name");
+  Check(ParseCoverHostPolicy("github") == CoverHostPolicy::kAuto,
+        "host line: the legacy github value has no policy name of its own");
 
   // The live shape: the publisher reports the same line through EmitLog, and a
-  // secret set for the host never appears anywhere in it.
+  // secret set for the host never appears anywhere in it. A legacy token rides
+  // along and must not appear either.
   CoverPublisher::SetLogger(&CaptureLog);
   g_log_lines.clear();
   CoverPublisher::ConfigureDrive("client-id-value", "GOCSPX-secret-value", "C:\\temp\\state.txt");
-  CoverPublisher::ConfigureAuth("github-token-value", "owner/repo");
+  CoverPublisher::ConfigureAuth("legacy-token-value", "owner/repo");
   CoverPublisher::ConfigureHost("drive");
   CoverPublisher::LogHostConfiguration();
   CoverPublisher::SetLogger(nullptr);
@@ -2098,9 +2029,11 @@ void TestHostConfigLine() {
               line.find("drive=on") != std::string::npos &&
               line.find("keyless=on") != std::string::npos,
           "host line: the live line names the policy and both participating hosts");
+    Check(line.find("github") == std::string::npos,
+          "host line: the live line never names the removed host");
     Check(line.find("GOCSPX") == std::string::npos &&
               line.find("secret-value") == std::string::npos &&
-              line.find("github-token-value") == std::string::npos &&
+              line.find("legacy-token-value") == std::string::npos &&
               line.find("client-id-value") == std::string::npos,
           "host line: no credential value can reach the log");
   }
@@ -2113,16 +2046,19 @@ void TestHostConfigLine() {
 // --- Cache hits name their host --------------------------------------------
 
 void TestCacheHitHost(const std::wstring& directory) {
-  const std::string github_name(64, 'a');
+  const std::string legacy_name(64, 'a');
+  const std::string legacy_url =
+      "https://raw.githubusercontent.com/nathwn12/art/main/covers/" + legacy_name + ".jpg";
   Check(HostNameForUrl("https://files.catbox.moe/a1b2c3.png") == "catbox.moe",
         "cache host: a catbox url names catbox.moe");
   Check(HostNameForUrl("https://n.uguu.se/nUoxUKCo.png") == "uguu.se",
         "cache host: a uguu url names uguu.se");
   Check(HostNameForUrl("https://litter.catbox.moe/abc123.jpg") == "litter.catbox.moe",
         "cache host: a litterbox url names litter.catbox.moe");
-  Check(HostNameForUrl("https://raw.githubusercontent.com/nathwn12/art/main/covers/" +
-                       github_name + ".jpg") == "github.com",
-        "cache host: a github raw url names github.com");
+  Check(HostNameForUrl(legacy_url).empty(),
+        "cache host: a legacy github url names no host");
+  Check(IsLegacyGitHubCachedUrl(legacy_url),
+        "cache host: a legacy github url is still recognised as legacy");
   Check(HostNameForUrl(DriveLh3Url("1AbCdEfGhIjKlMnOpQrStUvWxYz0123")) == "drive.google.com",
         "cache host: a drive url names drive.google.com");
   Check(HostNameForUrl("https://evil.test/x.png").empty(),
@@ -2145,6 +2081,61 @@ void TestCacheHitHost(const std::wstring& directory) {
   Check(CacheLookup(key, now, &hit) && hit.host == "litter.catbox.moe",
         "cache host: a cache hit reports the url's host, not an empty field");
   Check(hit.ok && hit.url == stored.url, "cache host: the hit still carries the url");
+  CoverPublisher::ClearCache();
+  DeleteFileW(path.c_str());
+  RemoveDirectoryW(directory.c_str());
+}
+
+// --- A legacy cache entry is replaced, never left in place ------------------
+//
+// When a cached legacy GitHub URL is re-published (Drive active) the cache
+// entry must be replaced with the new URL: left in place, every play would
+// re-upload. A stored normal entry, though, is never clobbered by a later
+// failure - the good URL stays until a new URL replaces it.
+
+void TestLegacyCacheEntryReplaced(const std::wstring& directory) {
+  CreateDirectoryW(directory.c_str(), nullptr);
+  const std::wstring path = directory + L"\\legacy-cache.txt";
+  DeleteFileW(path.c_str());
+  CoverPublisher::Configure(Utils::ToString(path));
+  const std::string key = Sha256Hex(std::vector<unsigned char>{'l', 'e', 'g', 'a', 'c', 'y'});
+  const long long now = static_cast<long long>(std::time(nullptr));
+  const std::string legacy_name(64, 'a');
+  const std::string legacy_url =
+      "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence-art/main/covers/" +
+      legacy_name + ".jpg";
+  const std::string drive_url = DriveLh3Url("1AbCdEfGhIjKlMnOpQrStUvWxYz0123");
+
+  Result legacy;
+  legacy.ok = true;
+  legacy.url = legacy_url;
+  CacheStore(key, legacy, now);
+  Result hit;
+  Check(CacheLookup(key, now, &hit) && hit.ok && hit.url == legacy_url,
+        "legacy replace: the legacy entry is stored and served back");
+
+  // The upgrade's new URL replaces the legacy entry in place.
+  Result upgraded;
+  upgraded.ok = true;
+  upgraded.url = drive_url;
+  CacheStore(key, upgraded, now);
+  Check(CacheLookup(key, now, &hit) && hit.ok && hit.url == drive_url,
+        "legacy replace: a re-published url overwrites the legacy entry");
+  Check(hit.host == "drive.google.com",
+        "legacy replace: the hit names the new host");
+  Check(PlanCachedUrl(hit.url, true) == CachedUrlAction::kUse,
+        "legacy replace: the new url is reused, so the next play never re-uploads");
+
+  // A normal stored entry survives a later failure: failures never clobber a
+  // good URL.
+  const std::string other = Sha256Hex(std::vector<unsigned char>{'k', 'e', 'p', 't'});
+  CacheStore(other, upgraded, now);
+  Result failed;
+  failed.reason = "http-500";
+  CacheStore(other, failed, now);
+  Check(CacheLookup(other, now, &hit) && hit.ok && hit.url == drive_url,
+        "legacy replace: a failure never overwrites a stored url");
+
   CoverPublisher::ClearCache();
   DeleteFileW(path.c_str());
   RemoveDirectoryW(directory.c_str());
@@ -2248,11 +2239,10 @@ int main(int argc, char** argv) {
   TestHostList();
   TestMultipartShapes();
   TestCentreSquareCrop();
-  TestGitHubHostConfig();
-  TestGitHubRequestShape();
-  TestGitHubResponseClassification();
+  TestLegacyAuthIgnored();
+  TestNoGitHubHost();
   TestCatboxHost();
-  TestTokenNeverLeaks();
+  TestDriveSecretNeverLeaks();
   TestHostFailureDoesNotSkipLayers();
   TestBoundary();
   TestAlbumIdentityKeys();
@@ -2281,6 +2271,7 @@ int main(int argc, char** argv) {
   TestConsentDeadline();
   TestHostConfigLine();
   TestCacheHitHost(directory);
+  TestLegacyCacheEntryReplaced(directory);
   TestConsentWaitDecision();
   TestConsentErrorToken();
 

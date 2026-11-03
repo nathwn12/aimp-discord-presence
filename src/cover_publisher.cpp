@@ -122,17 +122,14 @@ constexpr UINT kMaxImageDimension = 512;
 constexpr size_t kSkipReencodeMaxBytes = 256 * 1024;
 constexpr float kJpegQuality = 0.85f;
 
-// The GitHub contents response carries a base64 `content` object and can run to
-// a few hundred KB; the keyless hosts answer in bytes, so the larger limit
-// applies to the GitHub request only.
-constexpr size_t kMaxGitHubResponseBytes = 1024 * 1024;
-
 constexpr wchar_t kAgentName[] = L"AIMP-Discord-Presence/2.0";
 
 // Upload hosts are tried in order until one returns a usable URL, and the chain
 // is policy-driven (CoverHost): "auto" - the default - leads with Drive when
-// its credentials exist, otherwise GitHub when a token and repo exist, and
-// otherwise starts keyless; "drive" and "github" pin that authenticated host.
+// its credentials exist and otherwise starts keyless; "drive" pins that
+// authenticated host. A legacy "github" value reads as "auto", so it can never
+// add a host: the GitHub host is gone, and only Google Drive plus the keyless
+// hosts remain.
 // The keyless hosts are appended in every case, in this order: catbox.moe,
 // then uguu.se, then the dormant litter.catbox.moe - last, because it answers
 // HTTP 403 to a BunkerWeb WAF here, so it is never reached when an earlier host
@@ -141,12 +138,11 @@ constexpr wchar_t kAgentName[] = L"AIMP-Discord-Presence/2.0";
 // keyless fallbacks; it never skips a layer of the cover chain. Each host owns
 // both its endpoint and the shape of its request body.
 // A cached keyless URL is ephemeral: a hit on one is revalidated, or upgraded
-// to a permanent host when the policy names one. A permanent URL (Drive,
-// GitHub) is reused as-is.
+// to Drive when the policy puts Drive in the chain. A Drive URL is reused
+// as-is. A cached legacy-GitHub URL is legacy from the removed
+// GitHub host: it is never reused as-is, but upgraded to Drive when active,
+// else revalidated like an ephemeral URL.
 enum class UploadShape {
-  // GitHub: PUT /repos/{owner}/{repo}/contents/covers/{name}.jpg with a JSON
-  // body (base64 image). The response is JSON; the URL is content.download_url.
-  kGitHub,
   // catbox: POST /user/api.php with reqtype=fileupload and the image in
   // `fileToUpload`. The response body is the bare URL as text.
   kCatbox,
@@ -175,7 +171,7 @@ std::string HostNameUtf8(const UploadHost& upload_host) {
 }
 
 // The keyless hosts, always present and always in this order: catbox, then
-// uguu, then the dormant litterbox. The GitHub host, when configured, is
+// uguu, then the dormant litterbox. The Drive host, when configured, is
 // prepended to these by ActiveHosts().
 const size_t kBaseUploadHostCount = 3;
 const UploadHost kBaseUploadHosts[kBaseUploadHostCount] = {
@@ -184,18 +180,10 @@ const UploadHost kBaseUploadHosts[kBaseUploadHostCount] = {
     {L"litter.catbox.moe", L"litterbox.catbox.moe", L"/resources/internals/api.php", UploadShape::kLitterbox},
 };
 
-// The default GitHub repository: the owner's permanent art repo. CoverRepo
-// overrides it; CoverToken (empty by default) enables the host at all.
-const wchar_t kDefaultGitHubRepo[] = L"nathwn12/aimp-discord-presence-art";
-
-// The GitHub host configuration. `token` is only ever sent to api.github.com;
-// it is never logged, cached, or put into a Result. Guarded by g_host_mutex
-// because ConfigureAuth runs before the publisher worker starts, but the worker
-// reads it for each publish.
+// The Drive host configuration. Guarded by g_host_mutex because ConfigureDrive
+// and ConfigureHost run before the publisher worker starts, but the worker
+// reads them for each publish.
 std::mutex g_host_mutex;
-std::string g_github_token;
-std::wstring g_github_owner;
-std::wstring g_github_repo;
 
 // The Drive host configuration. `client_secret` is only ever sent to
 // oauth2.googleapis.com, in the token request body; it is never logged,
@@ -207,25 +195,14 @@ std::string g_drive_state_path;
 
 // The preferred host, from CoverHost. "auto" is the default; the keyless hosts
 // are always the last resort, whatever the preference.
-enum class CoverHostPolicy { kAuto, kDrive, kGithub, kKeyless };
+enum class CoverHostPolicy { kAuto, kDrive, kKeyless };
 
 CoverHostPolicy g_cover_host = CoverHostPolicy::kAuto;
 
-// Splits "owner/name" into its two parts. A malformed value yields false, which
-// skips the GitHub host rather than building a nonsense request target.
-bool ParseOwnerRepo(const std::wstring& repo, std::wstring* owner, std::wstring* name) {
-  const size_t slash = repo.find(L'/');
-  if (slash == std::wstring::npos || slash == 0 || slash + 1 >= repo.size()) {
-    return false;
-  }
-  *owner = repo.substr(0, slash);
-  *name = repo.substr(slash + 1);
-  return name->find(L'/') == std::wstring::npos;
-}
-
-// "auto", "drive", "github" or "keyless", case-insensitive and trimmed; every
-// other value - including empty - is "auto", so a typo in AIMP.ini can never
-// leave the chain empty.
+// "auto", "drive" or "keyless", case-insensitive and trimmed; every other
+// value - including empty and the legacy "github" - is "auto", so a typo in
+// AIMP.ini (or an old github pin) can never leave the chain empty, nor add a
+// host that no longer exists.
 CoverHostPolicy ParseCoverHostPolicy(const std::string& value) {
   static const char kWhitespace[] = " \t\r\n";
   size_t begin = 0;
@@ -245,65 +222,50 @@ CoverHostPolicy ParseCoverHostPolicy(const std::string& value) {
   if (lower == "drive") {
     return CoverHostPolicy::kDrive;
   }
-  if (lower == "github") {
-    return CoverHostPolicy::kGithub;
-  }
   if (lower == "keyless") {
     return CoverHostPolicy::kKeyless;
   }
+  // Legacy "github": the host is gone, so the pin reads as "auto".
   return CoverHostPolicy::kAuto;
 }
 
-// Which of the two authenticated hosts a publish leads with. Pure, so the
-// selection matrix is testable without credentials or a network:
-//   auto     drive when available, otherwise github when available
+// Which authenticated host a publish leads with. Pure, so the selection matrix
+// is testable without credentials or a network:
+//   auto     drive when available
 //   drive    drive when available
-//   github   github when available
 //   keyless  neither - the anonymous hosts only
 // The keyless hosts are appended by ActiveHosts() in every case, so a failed
 // preferred host still falls through exactly as the chain always did.
 struct HostChainPlan {
   bool drive = false;
-  bool github = false;
 };
 
-HostChainPlan PlanHostChain(CoverHostPolicy policy, bool drive_available, bool github_available) {
+HostChainPlan PlanHostChain(CoverHostPolicy policy, bool drive_available) {
   HostChainPlan plan;
   switch (policy) {
     case CoverHostPolicy::kDrive:
       plan.drive = drive_available;
-      break;
-    case CoverHostPolicy::kGithub:
-      plan.github = github_available;
       break;
     case CoverHostPolicy::kKeyless:
       break;
     case CoverHostPolicy::kAuto:
     default:
       plan.drive = drive_available;
-      plan.github = !drive_available && github_available;
       break;
   }
   return plan;
 }
 
-// The permanent hosts a cache upgrade may re-publish to, in the order the chain
-// tries them. Derived from the same HostChainPlan as a fresh upload, so the
-// cache path can never bypass the configured policy: with CoverHost=keyless the
-// list is empty and no authenticated host is ever touched, and with auto + Drive
-// credentials Drive comes first. Keyless hosts are never upgrade targets - an
-// ephemeral URL is exactly what an upgrade exists to replace.
-enum class PermanentHost { kDrive, kGitHub };
+// The permanent host a cache upgrade may re-publish to. Only Drive remains:
+// keyless hosts are never upgrade targets - an ephemeral URL is exactly what
+// an upgrade exists to replace, and a legacy GitHub URL is never a target.
+enum class PermanentHost { kDrive };
 
-std::vector<PermanentHost> PlanCacheUpgrade(CoverHostPolicy policy, bool drive_available,
-                                           bool github_available) {
-  const HostChainPlan plan = PlanHostChain(policy, drive_available, github_available);
+std::vector<PermanentHost> PlanCacheUpgrade(CoverHostPolicy policy, bool drive_available) {
+  const HostChainPlan plan = PlanHostChain(policy, drive_available);
   std::vector<PermanentHost> hosts;
   if (plan.drive) {
     hosts.push_back(PermanentHost::kDrive);
-  }
-  if (plan.github) {
-    hosts.push_back(PermanentHost::kGitHub);
   }
   return hosts;
 }
@@ -313,8 +275,6 @@ std::string PolicyName(CoverHostPolicy policy) {
   switch (policy) {
     case CoverHostPolicy::kDrive:
       return "drive";
-    case CoverHostPolicy::kGithub:
-      return "github";
     case CoverHostPolicy::kKeyless:
       return "keyless";
     case CoverHostPolicy::kAuto:
@@ -342,31 +302,18 @@ std::string DriveUnavailableReason(bool client_id, bool client_secret, bool stat
   return std::string();
 }
 
-std::string GitHubUnavailableReason(bool token, bool repo) {
-  if (!token) {
-    return "no-token";
-  }
-  if (!repo) {
-    return "bad-repo";
-  }
-  return std::string();
-}
-
 // Everything the startup line needs, all of it booleans and fixed tokens.
 struct HostConfigSummary {
   CoverHostPolicy policy = CoverHostPolicy::kAuto;
   bool drive_usable = false;
-  bool github_usable = false;
   std::string drive_reason;   // why Drive is unusable; empty when usable
-  std::string github_reason;  // why GitHub is unusable; empty when usable
 };
 
 // One line naming the policy and each host's participation: "on" means the host
 // is in the chain for this load, with the reason when it is not. Pure, so the
 // diagnostic line itself is pinned by a test.
 std::string FormatHostConfigLine(const HostConfigSummary& summary) {
-  const HostChainPlan plan =
-      PlanHostChain(summary.policy, summary.drive_usable, summary.github_usable);
+  const HostChainPlan plan = PlanHostChain(summary.policy, summary.drive_usable);
   std::string line = std::string("local-cover hosts policy=") + PolicyName(summary.policy);
   line += std::string(" drive=") + (plan.drive ? "on" : "off");
   if (!plan.drive) {
@@ -374,14 +321,6 @@ std::string FormatHostConfigLine(const HostConfigSummary& summary) {
         summary.drive_usable ? std::string("policy") : summary.drive_reason;
     if (!drive_reason.empty()) {
       line += " drive-reason=" + drive_reason;
-    }
-  }
-  line += std::string(" github=") + (plan.github ? "on" : "off");
-  if (!plan.github) {
-    const std::string github_reason =
-        summary.github_usable ? std::string("policy") : summary.github_reason;
-    if (!github_reason.empty()) {
-      line += " github-reason=" + github_reason;
     }
   }
   line += " keyless=on";
@@ -394,16 +333,11 @@ bool DriveConfiguredLocked() {
   return !g_drive_client_id.empty() && !g_drive_client_secret.empty() && !g_drive_state_path.empty();
 }
 
-bool GitHubConfiguredLocked() {
-  return !g_github_token.empty() && !g_github_owner.empty() && !g_github_repo.empty();
-}
-
-// Every host to try, in order: the preferred authenticated host (Drive and/or
-// GitHub per the policy), then the keyless hosts, unchanged.
+// Every host to try, in order: the preferred authenticated host (Drive per the
+// policy), then the keyless hosts, unchanged.
 std::vector<UploadHost> ActiveHosts() {
   std::lock_guard<std::mutex> lock(g_host_mutex);
-  const HostChainPlan plan =
-      PlanHostChain(g_cover_host, DriveConfiguredLocked(), GitHubConfiguredLocked());
+  const HostChainPlan plan = PlanHostChain(g_cover_host, DriveConfiguredLocked());
   std::vector<UploadHost> hosts;
   if (plan.drive) {
     UploadHost drive;
@@ -413,38 +347,17 @@ std::vector<UploadHost> ActiveHosts() {
     drive.shape = UploadShape::kDrive;
     hosts.push_back(drive);
   }
-  if (plan.github) {
-    UploadHost github;
-    github.name = L"github.com";
-    github.host = L"api.github.com";
-    github.path = L"/repos/" + g_github_owner + L"/" + g_github_repo + L"/contents/covers/";
-    github.shape = UploadShape::kGitHub;
-    hosts.push_back(github);
-  }
   for (size_t i = 0; i < kBaseUploadHostCount; ++i) {
     hosts.push_back(kBaseUploadHosts[i]);
   }
   return hosts;
 }
 
-bool GitHubTokenPresent() {
-  std::lock_guard<std::mutex> lock(g_host_mutex);
-  return !g_github_token.empty();
-}
-
-// The GitHub host is usable only when a token AND a parseable repo are
-// configured - the same condition ActiveHosts() uses to prepend it. A token
-// with a malformed repo is present-but-unused, exactly like no token.
-bool GitHubUploadActive() {
-  std::lock_guard<std::mutex> lock(g_host_mutex);
-  return !g_github_token.empty() && !g_github_owner.empty() && !g_github_repo.empty();
-}
-
 // The Drive host is active only when the policy selects it AND its credentials
 // and sidecar are configured - the same condition ActiveHosts() uses.
 bool DriveUploadActive() {
   std::lock_guard<std::mutex> lock(g_host_mutex);
-  return PlanHostChain(g_cover_host, DriveConfiguredLocked(), GitHubConfiguredLocked()).drive;
+  return PlanHostChain(g_cover_host, DriveConfiguredLocked()).drive;
 }
 
 // Each host owns the exact URL shape it answers with, so a lookalike host
@@ -457,10 +370,6 @@ bool DriveUploadActive() {
 constexpr char kLitterboxUrlPattern[] = R"(^https://litter\.catbox\.moe/[a-z0-9]{6}\.(png|jpg|jpeg)$)";
 constexpr char kUguuUrlPattern[] = R"(^https://([A-Za-z0-9-]+\.)?uguu\.se/[A-Za-z0-9]+\.(png|jpg|jpeg|gif|webp|bmp)$)";
 constexpr char kCatboxUrlPattern[] = R"(^https://files\.catbox\.moe/[A-Za-z0-9]+\.(png|jpg|jpeg|gif|webp|bmp)$)";
-// A GitHub raw cover URL, generic over owner/repo so the cache can validate a
-// stored URL; the per-request classifier pins the exact owner and repo.
-constexpr char kGitHubRawUrlPattern[] =
-    R"(^https://raw\.githubusercontent\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/main/covers/[0-9a-f]{64}\.jpg$)";
 // A Drive cover URL: the lh3 short link Discord renders. Pinned to the host, so
 // a lookalike can never be adopted as a cover.
 constexpr char kDriveLh3UrlPattern[] =
@@ -473,8 +382,6 @@ std::string UploadUrlPatternFor(const UploadHost& upload_host) {
       return std::string(kCatboxUrlPattern);
     case UploadShape::kUguu:
       return std::string(kUguuUrlPattern);
-    case UploadShape::kGitHub:
-      return std::string(kGitHubRawUrlPattern);
     case UploadShape::kDrive:
       return std::string(kDriveLh3UrlPattern);
     case UploadShape::kLitterbox:
@@ -507,24 +414,19 @@ bool LooksLikeUploadUrl(const std::string& text) {
   static const std::regex litterbox_pattern(kLitterboxUrlPattern);
   static const std::regex uguu_pattern(kUguuUrlPattern);
   static const std::regex catbox_pattern(kCatboxUrlPattern);
-  static const std::regex github_pattern(kGitHubRawUrlPattern);
   static const std::regex drive_pattern(kDriveLh3UrlPattern);
   return std::regex_match(text, litterbox_pattern) || std::regex_match(text, uguu_pattern) ||
-         std::regex_match(text, catbox_pattern) || std::regex_match(text, github_pattern) ||
-         std::regex_match(text, drive_pattern);
+         std::regex_match(text, catbox_pattern) || std::regex_match(text, drive_pattern);
 }
 
 // The per-host predicate used by the classifier: a 200 is a success only when
-// the body is the bare URL of the host that answered. GitHub never uses this
-// form (its response is JSON, validated with its own owner/repo pin), so its
-// pattern here is the generic raw-URL shape.
+// the body is the bare URL of the host that answered.
 bool LooksLikeHostUrl(const std::string& text, const UploadHost& upload_host) {
   const std::string url_pattern = UploadUrlPatternFor(upload_host);
   static const std::map<std::string, std::regex> patterns = {
       {kLitterboxUrlPattern, std::regex(kLitterboxUrlPattern)},
       {kUguuUrlPattern, std::regex(kUguuUrlPattern)},
       {kCatboxUrlPattern, std::regex(kCatboxUrlPattern)},
-      {kGitHubRawUrlPattern, std::regex(kGitHubRawUrlPattern)},
       {kDriveLh3UrlPattern, std::regex(kDriveLh3UrlPattern)},
   };
   const auto found = patterns.find(url_pattern);
@@ -544,9 +446,6 @@ std::string HostNameForUrl(const std::string& url) {
   if (LooksLikeHostUrl(url, UploadHost{L"litter.catbox.moe", L"", L"", UploadShape::kLitterbox})) {
     return "litter.catbox.moe";
   }
-  if (LooksLikeHostUrl(url, UploadHost{L"github.com", L"", L"", UploadShape::kGitHub})) {
-    return "github.com";
-  }
   if (LooksLikeHostUrl(url, UploadHost{L"drive.google.com", L"", L"", UploadShape::kDrive})) {
     return "drive.google.com";
   }
@@ -555,42 +454,49 @@ std::string HostNameForUrl(const std::string& url) {
 
 // A cached URL on a keyless host (catbox, uguu, litterbox) is ephemeral: it
 // can die while the cache entry lives (measured: a uguu URL answering 404
-// months later). A GitHub raw URL is the owner's own permanent repo. The
-// cache only ever stores URLs that pass LooksLikeUploadUrl, so an unknown
-// shape passes through as durable - it can only be a future host's URL.
+// months later). A Drive URL is the owner's own storage and is durable. The
+// cache only ever stores upload URLs (plus legacy GitHub URLs from an older
+// version, below), so an unknown shape passes through as durable - it can only
+// be a future host's URL.
 bool IsEphemeralCachedUrl(const std::string& url) {
   return LooksLikeHostUrl(url, UploadHost{L"", L"", L"", UploadShape::kCatbox}) ||
          LooksLikeHostUrl(url, UploadHost{L"", L"", L"", UploadShape::kUguu}) ||
          LooksLikeHostUrl(url, UploadHost{L"", L"", L"", UploadShape::kLitterbox});
 }
 
-bool IsGitHubCachedUrl(const std::string& url) {
-  return LooksLikeHostUrl(url, UploadHost{L"", L"", L"", UploadShape::kGitHub});
+// --- Legacy GitHub cache classifier -----------------------------------------
+//
+// The GitHub host is gone: only Google Drive and the keyless hosts remain. A
+// cached legacy-GitHub URL from an older version is legacy: it is
+// never reused as-is. PlanCachedUrl upgrades it to Drive when the policy puts
+// Drive in the chain, and revalidates it otherwise. This predicate is the only
+// place that names the legacy host.
+bool IsLegacyGitHubCachedUrl(const std::string& url) {
+  static const char kPrefix[] = "https://raw.githubusercontent.com/";
+  return url.compare(0, sizeof(kPrefix) - 1, kPrefix) == 0;
 }
 
 // What a cache hit needs: use it as-is, re-publish the local bytes to a
 // permanent host, or revalidate the stored URL before trusting it.
 // Pure, so the policy is testable without a network.
 enum class CachedUrlAction {
-  kUse,  // durable (GitHub, Drive) or unknown shape: answer the hit
-  // Ephemeral URL and the host policy selects a permanent authenticated host:
-  // re-publish there. The target is whichever host PlanCacheUpgrade names, in
-  // chain order - never the keyless hosts themselves.
+  kUse,  // durable (Drive) or unknown shape: answer the hit
+  // Ephemeral or legacy URL and the host policy selects Drive: re-publish
+  // there. Keyless hosts are never upgrade targets - an ephemeral URL is
+  // exactly what an upgrade exists to replace.
   kUpgradeToPermanent,
-  // The historical name for the same action, kept so existing callers and
-  // tests keep their meaning; the target is no longer necessarily GitHub.
-  kUpgradeToGitHub = kUpgradeToPermanent,
-  kRevalidate,  // ephemeral URL, no permanent host: health-check, re-publish if dead
+  kRevalidate,  // ephemeral or legacy URL, no permanent host: health-check, re-publish if dead
 };
 
-// A hit on an ephemeral keyless URL is never trusted blindly. `permanent_active`
-// is PlanCacheUpgrade(...).empty() negated: with a permanent host the bytes are
-// re-published there, without one the stored URL is revalidated.
+// A hit on an ephemeral keyless URL - or a legacy GitHub URL - is never
+// trusted blindly. `permanent_active` is PlanCacheUpgrade(...).empty()
+// negated: with Drive in the chain the bytes are re-published there, without
+// it the stored URL is revalidated.
 CachedUrlAction PlanCachedUrl(const std::string& url, bool permanent_active) {
-  if (!IsEphemeralCachedUrl(url)) {
-    return CachedUrlAction::kUse;
+  if (IsEphemeralCachedUrl(url) || IsLegacyGitHubCachedUrl(url)) {
+    return permanent_active ? CachedUrlAction::kUpgradeToPermanent : CachedUrlAction::kRevalidate;
   }
-  return permanent_active ? CachedUrlAction::kUpgradeToPermanent : CachedUrlAction::kRevalidate;
+  return CachedUrlAction::kUse;
 }
 
 std::string SanitizeMime(const char* mime) {
@@ -746,52 +652,12 @@ Result ClassifyUploadResponse(DWORD status, const std::string& body,
   return Failure("http-" + std::to_string(status));
 }
 
-// --- GitHub contents API ----------------------------------------------------
+// --- JSON string field reader -------------------------------------------------
 //
-// The GitHub host is the owner's own permanent repo. A cover is written once,
-// named by the SHA-256 of the uploaded bytes, so re-uploading the same image is
-// idempotent: the contents API answers 422 (or 409) when the file is already
-// present, and that is treated as success via the raw URL. The access token is
-// only ever placed in the Authorization header of a request to api.github.com;
-// it never reaches a Result, the cache, or a log line.
-
-std::string Base64Encode(const unsigned char* data, size_t length) {
-  static const char kAlphabet[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string encoded;
-  encoded.reserve(((length + 2) / 3) * 4);
-  size_t i = 0;
-  while (i + 3 <= length) {
-    const uint32_t chunk = (static_cast<uint32_t>(data[i]) << 16) |
-                           (static_cast<uint32_t>(data[i + 1]) << 8) |
-                           static_cast<uint32_t>(data[i + 2]);
-    encoded.push_back(kAlphabet[(chunk >> 18) & 0x3f]);
-    encoded.push_back(kAlphabet[(chunk >> 12) & 0x3f]);
-    encoded.push_back(kAlphabet[(chunk >> 6) & 0x3f]);
-    encoded.push_back(kAlphabet[chunk & 0x3f]);
-    i += 3;
-  }
-  const size_t remaining = length - i;
-  if (remaining == 1) {
-    const uint32_t chunk = static_cast<uint32_t>(data[i]) << 16;
-    encoded.push_back(kAlphabet[(chunk >> 18) & 0x3f]);
-    encoded.push_back(kAlphabet[(chunk >> 12) & 0x3f]);
-    encoded += "==";
-  } else if (remaining == 2) {
-    const uint32_t chunk = (static_cast<uint32_t>(data[i]) << 16) |
-                           (static_cast<uint32_t>(data[i + 1]) << 8);
-    encoded.push_back(kAlphabet[(chunk >> 18) & 0x3f]);
-    encoded.push_back(kAlphabet[(chunk >> 12) & 0x3f]);
-    encoded.push_back(kAlphabet[(chunk >> 6) & 0x3f]);
-    encoded.push_back('=');
-  }
-  return encoded;
-}
-
 // A small, dependency-free JSON string field reader in the same style as
 // album_art.cpp's extractor: find the quoted key, then read the quoted string
-// that follows it. GitHub's URLs never contain escapes, but a backslash is
-// consumed so a surprising response cannot desync the scan.
+// that follows it. A backslash is consumed so a surprising response cannot
+// desync the scan.
 std::string ExtractJsonStringField(const std::string& json, const std::string& key) {
   const size_t position = json.find("\"" + key + "\"");
   if (position == std::string::npos) {
@@ -825,83 +691,10 @@ std::string ExtractJsonStringField(const std::string& json, const std::string& k
   return value;
 }
 
-std::string GitHubRawUrl(const std::wstring& owner, const std::wstring& repo,
-                         const std::string& name) {
-  return "https://raw.githubusercontent.com/" + Utils::ToString(owner) + "/" +
-         Utils::ToString(repo) + "/main/covers/" + name + ".jpg";
-}
-
-// The exact request the GitHub host sends. Split out as a pure builder so the
-// method, target, headers and JSON body are testable without a network.
-struct GitHubRequest {
-  std::wstring method;
-  std::wstring host;
-  std::wstring path;
-  std::wstring headers;
-  std::string body;
-};
-
-GitHubRequest BuildGitHubRequest(const std::string& token, const std::wstring& owner,
-                                 const std::wstring& repo, const std::string& name,
-                                 const std::vector<unsigned char>& image) {
-  GitHubRequest request;
-  request.method = L"PUT";
-  request.host = L"api.github.com";
-  request.path =
-      L"/repos/" + owner + L"/" + repo + L"/contents/covers/" + Utils::ToWString(name) + L".jpg";
-  request.headers = L"Authorization: Bearer " + Utils::ToWString(token) + L"\r\n" +
-                    L"Accept: application/vnd.github+json\r\n" +
-                    L"User-Agent: AIMP-Discord-Presence\r\n" +
-                    L"X-GitHub-Api-Version: 2022-11-28\r\n" +
-                    L"Content-Type: application/json\r\n";
-  const std::string encoded =
-      Base64Encode(image.empty() ? nullptr : image.data(), image.size());
-  const std::string short_sha = name.size() >= 7 ? name.substr(0, 7) : name;
-  request.body = "{\"message\":\"add cover " + short_sha + "\",\"content\":\"" + encoded +
-                 "\",\"branch\":\"main\"}";
-  return request;
-}
-
-// Classifies a GitHub contents PUT. The success body is JSON and the URL is
-// content.download_url, pinned to this exact owner and repo; a body without
-// that field is never adopted as a URL. 422/409 mean the immutable file is
-// already there, so the constructed raw URL is returned and the caller's health
-// check proves it retrievable.
-Result ClassifyGitHubResponse(DWORD status, const std::string& body, const std::wstring& owner,
-                              const std::wstring& repo, const std::string& name) {
-  if (status == 200 || status == 201) {
-    const std::string text = TrimWhitespace(body);
-    if (text.empty()) {
-      return Failure("empty-body");
-    }
-    const std::string download = ExtractJsonStringField(text, "download_url");
-    const std::string prefix = "https://raw.githubusercontent.com/" + Utils::ToString(owner) +
-                               "/" + Utils::ToString(repo) + "/";
-    if (download.size() > prefix.size() && download.compare(0, prefix.size(), prefix) == 0 &&
-        LooksLikeHostUrl(download, UploadHost{L"", L"", L"", UploadShape::kGitHub})) {
-      Result result;
-      result.ok = true;
-      result.url = download;
-      return result;
-    }
-    return Failure("http-" + std::to_string(status) + "-unexpected-body");
-  }
-  if (status == 422 || status == 409) {
-    Result result;
-    result.ok = true;
-    result.url = GitHubRawUrl(owner, repo, name);
-    return result;
-  }
-  // 401/403 (bad or expired token) and every other status name only the status;
-  // the response body is never echoed, so nothing it contains can leak.
-  return Failure("http-" + std::to_string(status));
-}
-
 // --- Google Drive API -------------------------------------------------------
 //
 // The Drive host is the owner's own storage. The file is named by the SHA-256
-// of the uploaded bytes, matching the GitHub host's convention and the cache
-// key, and lives in one bootstrap folder made publicly readable once; children
+// of the uploaded bytes, matching the cache key, and lives in one bootstrap folder made publicly readable once; children
 // inherit that, so no per-file permission call is ever made. The bearer token
 // only ever reaches googleapis.com, in a request header or the token body.
 
@@ -1567,7 +1360,10 @@ bool ParseCacheLine(const std::string& line, std::string* key, CacheEntry* entry
   const std::string payload = line.substr(second + 1);
   CacheEntry parsed;
   if (state == "ok") {
-    if (!LooksLikeUploadUrl(payload)) {
+    // Legacy GitHub URLs from an older version still load: they are never
+    // reused as-is (PlanCachedUrl upgrades or revalidates them), but loading
+    // them is what lets one upgrade end the entry instead of re-uploading.
+    if (!LooksLikeUploadUrl(payload) && !IsLegacyGitHubCachedUrl(payload)) {
       return false;
     }
     parsed.ok = true;
@@ -1727,8 +1523,16 @@ void CacheStore(const std::string& key, const Result& result, long long now) {
   if (g_cache_path.empty()) {
     return;
   }
+  // A stored URL is never clobbered by a later failure: a good entry stays
+  // until a new URL replaces it. A legacy GitHub entry IS replaced the moment
+  // a re-publish or fresh upload yields a new URL, so one upgrade ends the
+  // legacy entry instead of re-uploading on every play.
+  const auto kept = g_cache.find(key);
+  if (!result.ok && kept != g_cache.end() && kept->second.ok) {
+    return;
+  }
   CacheEntry entry;
-  if (result.ok && LooksLikeUploadUrl(result.url)) {
+  if (result.ok && (LooksLikeUploadUrl(result.url) || IsLegacyGitHubCachedUrl(result.url))) {
     entry.ok = true;
     entry.payload = result.url;
   } else {
@@ -2074,68 +1878,6 @@ UploadAttempt UploadMultipartBody(const UploadHost& upload_host, const std::stri
   return AttemptResult(ClassifyUploadResponse(status, response, upload_host.shape));
 }
 
-// Sends the GitHub contents PUT. The token is read from the guarded config and
-// placed only in this request's Authorization header; the request and its
-// headers are stack-local and are never logged. The success response is parsed
-// for content.download_url; 422/409 is the immutable file already being there.
-UploadAttempt UploadGitHubBody(const std::wstring& owner, const std::wstring& repo,
-                               const std::string& name,
-                               const std::vector<unsigned char>& image) {
-  std::string token;
-  {
-    std::lock_guard<std::mutex> lock(g_host_mutex);
-    token = g_github_token;
-  }
-  if (token.empty()) {
-    return AttemptResult(Failure("github-no-token"));
-  }
-  const GitHubRequest github = BuildGitHubRequest(token, owner, repo, name, image);
-  if (github.body.size() > 0xffffffffull) {
-    return AttemptResult(Failure("body-too-large"));
-  }
-  const Deadline deadline(kTotalTimeoutMs);
-  WinHttpHandle session = OpenSession(deadline);
-  if (!session) {
-    return TransportFailure("session-open-failed", "connect", GetLastError());
-  }
-  WinHttpHandle connection(
-      WinHttpConnect(session.get(), github.host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0));
-  if (!connection) {
-    return TransportFailure("connect-failed", "connect", GetLastError());
-  }
-  WinHttpHandle request(WinHttpOpenRequest(connection.get(), github.method.c_str(),
-                                           github.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                           WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
-  if (!request) {
-    return TransportFailure("request-open-failed", "send", GetLastError());
-  }
-  const DWORD body_size = static_cast<DWORD>(github.body.size());
-  if (WinHttpSendRequest(request.get(), github.headers.c_str(), static_cast<DWORD>(-1),
-                         const_cast<char*>(github.body.data()), body_size, body_size, 0) == FALSE) {
-    return TransportFailure("send-failed", "send", GetLastError());
-  }
-  if (WinHttpReceiveResponse(request.get(), nullptr) == FALSE) {
-    return TransportFailure("receive-failed", "receive", GetLastError());
-  }
-  DWORD status = 0;
-  DWORD status_error = 0;
-  if (!QueryStatusCode(request.get(), &status, &status_error)) {
-    return AttemptResult(Failure("status-query-failed phase=receive winhttp=" +
-                                 std::to_string(status_error)));
-  }
-  std::string response;
-  const ReadOutcome read =
-      ReadResponseBody(request.get(), deadline, &response, kMaxGitHubResponseBytes);
-  if (!read.ok) {
-    if (status == 200 || status == 201 || status == 422 || status == 409 || status == 401 ||
-        status == 403) {
-      return AttemptResult(ClassifyGitHubResponse(status, response, owner, repo, name));
-    }
-    return TransportFailure(read.tag, "receive", read.error);
-  }
-  return AttemptResult(ClassifyGitHubResponse(status, response, owner, repo, name));
-}
-
 // --- Google Drive transport -------------------------------------------------
 //
 // Every request here is built and sent on the cover worker thread. Nothing in
@@ -2170,8 +1912,8 @@ struct HttpResponse {
 };
 
 // One HTTPS request with an explicit method, target, headers and body. Kept
-// separate from the form-data upload helpers so the working keyless chain and
-// the GitHub path are untouched by this host.
+// separate from the form-data upload helpers so the working keyless chain is
+// untouched by this host.
 HttpResponse SendHttp(const std::wstring& method, const std::wstring& host, const std::wstring& path,
                       const std::wstring& headers, const std::string& body,
                       size_t max_bytes = kMaxDriveResponseBytes) {
@@ -2927,23 +2669,13 @@ UploadAttempt UploadDriveImage(const std::string& name, const std::string& mime,
 }
 
 // Dispatches one attempt to the transport that matches the host's shape. The
-// GitHub host needs the owner/repo (from the guarded config) and the cover name;
-// the keyless hosts build their multipart body here.
+// Drive host is named by the hash of the uploaded bytes; the keyless hosts
+// build their multipart body here.
 UploadAttempt AttemptHostUpload(const UploadHost& upload_host, const PreparedImage& prepared) {
   if (upload_host.shape == UploadShape::kDrive) {
     // The file is named by the hash of the uploaded bytes, matching the cache
-    // key and the GitHub host's convention, so the existing cache dedupes.
+    // key, so the existing cache dedupes.
     return UploadDriveImage(UploadCacheKey(prepared), prepared.mime, prepared.bytes);
-  }
-  if (upload_host.shape == UploadShape::kGitHub) {
-    std::wstring owner;
-    std::wstring repo;
-    {
-      std::lock_guard<std::mutex> lock(g_host_mutex);
-      owner = g_github_owner;
-      repo = g_github_repo;
-    }
-    return UploadGitHubBody(owner, repo, UploadCacheKey(prepared), prepared.bytes);
   }
   const std::string content_type = SanitizeMime(prepared.mime.c_str());
   const std::string boundary = MakeBoundary();
@@ -3112,20 +2844,6 @@ HostOutcome TryUploadHostGuarded(const UploadHost& upload_host, const PreparedIm
   return outcome;
 }
 
-// Uploads to the permanent GitHub host only. Answers github-not-configured
-// without touching the network when the host is not in the chain.
-HostOutcome TryGitHubUpload(const PreparedImage& prepared) {
-  const std::vector<UploadHost> hosts = ActiveHosts();
-  for (size_t i = 0; i < hosts.size(); ++i) {
-    if (hosts[i].shape == UploadShape::kGitHub) {
-      return TryUploadHostGuarded(hosts[i], prepared);
-    }
-  }
-  HostOutcome outcome;
-  outcome.result = Failure("github-not-configured");
-  return outcome;
-}
-
 // The same for the permanent Drive host; drive-not-configured when the policy
 // does not put it in the chain (or its credentials are absent).
 HostOutcome TryDriveUpload(const PreparedImage& prepared) {
@@ -3140,12 +2858,12 @@ HostOutcome TryDriveUpload(const PreparedImage& prepared) {
   return outcome;
 }
 
-// The permanent hosts the current policy allows a cache upgrade to use, in
-// chain order. Read under the same lock as ActiveHosts(), so the cache path and
-// a fresh upload can never disagree about the policy.
+// The permanent host the current policy allows a cache upgrade to use. Read
+// under the same lock as ActiveHosts(), so the cache path and a fresh upload
+// can never disagree about the policy.
 std::vector<PermanentHost> CurrentUpgradeHosts() {
   std::lock_guard<std::mutex> lock(g_host_mutex);
-  return PlanCacheUpgrade(g_cover_host, DriveConfiguredLocked(), GitHubConfiguredLocked());
+  return PlanCacheUpgrade(g_cover_host, DriveConfiguredLocked());
 }
 
 std::string CurrentPolicyName() {
@@ -3153,17 +2871,16 @@ std::string CurrentPolicyName() {
   return PolicyName(g_cover_host);
 }
 
-// Re-publishes prepared bytes to the policy's permanent hosts, in chain order,
-// stopping at the first success. A keyless policy answers "no-permanent-host"
-// without touching the network. The caller revalidates the cached URL when this
-// fails, so a dead ephemeral URL is never sent.
+// Re-publishes prepared bytes to the policy's permanent host, Drive. A keyless
+// policy answers "no-permanent-host" without touching the network. The caller
+// revalidates the cached URL when this fails, so a dead ephemeral or legacy
+// URL is never sent.
 HostOutcome UpgradeCachedUrl(const PreparedImage& prepared) {
   const std::vector<PermanentHost> order = CurrentUpgradeHosts();
   HostOutcome outcome;
   outcome.result = Failure("no-permanent-host");
   for (size_t i = 0; i < order.size(); ++i) {
-    outcome = order[i] == PermanentHost::kDrive ? TryDriveUpload(prepared)
-                                                : TryGitHubUpload(prepared);
+    outcome = TryDriveUpload(prepared);
     if (outcome.result.ok) {
       return outcome;
     }
@@ -3174,7 +2891,7 @@ HostOutcome UpgradeCachedUrl(const PreparedImage& prepared) {
 }
 
 // Every configured host, in order, in one comma-separated token for the failure
-// marker: "github.com,catbox.moe,uguu.se,litter.catbox.moe".
+// marker: "drive.google.com,catbox.moe,uguu.se,litter.catbox.moe".
 std::string HostListToken() {
   const std::vector<UploadHost> hosts = ActiveHosts();
   std::string token;
@@ -3197,21 +2914,10 @@ void EmitLog(const std::string& line) {
   }
 }
 
-// Names the GitHub host's authentication state, never the token: a configured
-// token logs "auth=present", an empty one "auth=absent". A 401/403 from GitHub
-// logs "auth=rejected" with the status only.
-void LogGitHubAuthState() {
-  EmitLog(std::string("local-cover github auth=") + (GitHubTokenPresent() ? "present" : "absent"));
-}
-
 // Names the Drive host's state, never a token or the secret: whether the host is
 // in this chain at all, and (below) why one attempt failed.
 void LogDriveHostState() {
   EmitLog(std::string("local-cover drive host=") + (DriveUploadActive() ? "active" : "inactive"));
-}
-
-void LogGitHubAuthRejected(const std::string& status) {
-  EmitLog("local-cover github auth=rejected status=" + status);
 }
 
 void LogHostSuccess(const Result& result) {
@@ -3284,15 +2990,10 @@ void Configure(const std::string& cache_path) {
   }
 }
 
-void ConfigureAuth(const std::string& token, const std::string& repo) {
-  std::wstring owner;
-  std::wstring name;
-  const std::wstring configured = repo.empty() ? std::wstring(kDefaultGitHubRepo) : Utils::ToWString(repo);
-  ParseOwnerRepo(configured, &owner, &name);
-  std::lock_guard<std::mutex> lock(g_host_mutex);
-  g_github_token = token;
-  g_github_owner = owner;
-  g_github_repo = name;
+void ConfigureAuth(const std::string& /*token*/, const std::string& /*repo*/) {
+  // Legacy GitHub host, removed: CoverToken/CoverRepo are ignored without
+  // error, so an existing configuration carrying them never fails to load and
+  // no host is ever added for them.
 }
 
 void ConfigureHost(const std::string& value) {
@@ -3304,14 +3005,10 @@ void LogHostConfiguration() {
   HostConfigSummary summary;
   {
     std::lock_guard<std::mutex> lock(g_host_mutex);
-    const bool github_token = !g_github_token.empty();
-    const bool github_repo = !g_github_owner.empty() && !g_github_repo.empty();
     summary.policy = g_cover_host;
     summary.drive_usable = DriveConfiguredLocked();
-    summary.github_usable = github_token && github_repo;
     summary.drive_reason = DriveUnavailableReason(
         !g_drive_client_id.empty(), !g_drive_client_secret.empty(), !g_drive_state_path.empty());
-    summary.github_reason = GitHubUnavailableReason(github_token, github_repo);
   }
   // Host names, the policy and fixed tokens only: no token or secret value,
   // and not even a prefix or a length of one.
@@ -3356,13 +3053,12 @@ Result Publish(const std::vector<unsigned char>& image_bytes, const char* mime) 
         cached.detail = prepared.note + " key=" + key + " cache=hit";
         return cached;
       }
-      // A hit on an ephemeral keyless URL is never trusted blindly: with a
-      // permanent host selected by the policy (Drive and/or GitHub, in chain
-      // order) the local bytes are re-published there and the cache is updated;
-      // with none the stored URL is revalidated and a dead entry falls through
-      // to a fresh keyless upload below, which overwrites it. Either way a dead
-      // cached URL is never sent, and CoverHost=keyless never reaches an
-      // authenticated host.
+      // A hit on an ephemeral keyless URL - or a legacy GitHub URL - is never
+      // trusted blindly: with Drive selected by the policy the local bytes are
+      // re-published there and the cache is updated; with none the stored URL
+      // is revalidated and a dead entry falls through to a fresh keyless
+      // upload below, which overwrites it. Either way a dead cached URL is
+      // never sent, and CoverHost=keyless never reaches an authenticated host.
       const std::vector<PermanentHost> upgrade_hosts = CurrentUpgradeHosts();
       const CachedUrlAction action = PlanCachedUrl(cached.url, !upgrade_hosts.empty());
       if (action == CachedUrlAction::kUse) {
@@ -3386,7 +3082,7 @@ Result Publish(const std::vector<unsigned char>& image_bytes, const char* mime) 
         // possibly-dead ephemeral URL.
       } else {
         // No permanent host is in the chain for this policy: say so, with the
-        // policy, so a cache hit that never tries Drive or GitHub is explained
+        // policy, so a cache hit that never tries Drive is explained
         // by one line instead of an absence of lines.
         EmitLog("local-cover cache-upgrade-skipped key=" + key +
                 " reason=no-permanent-host policy=" + CurrentPolicyName());
@@ -3400,11 +3096,10 @@ Result Publish(const std::vector<unsigned char>& image_bytes, const char* mime) 
     }
 
     // Ordered fallback inside one publish: the policy's preferred host first
-    // (Drive and/or GitHub), then catbox, then uguu, then the dormant
+    // (Drive), then catbox, then uguu, then the dormant
     // litterbox. All are the same layer - a host failure never skips the online
     // rung. Each host is retried once on a transport failure only, and a host
     // that throws is logged and skipped rather than ending the chain.
-    LogGitHubAuthState();
     LogDriveHostState();
     const std::vector<UploadHost> hosts = ActiveHosts();
     Result result;
@@ -3412,12 +3107,6 @@ Result Publish(const std::vector<unsigned char>& image_bytes, const char* mime) 
     for (size_t i = 0; i < hosts.size(); ++i) {
       const HostOutcome outcome = TryUploadHostGuarded(hosts[i], prepared);
       total_attempts += outcome.attempts;
-      if (!outcome.result.ok && hosts[i].shape == UploadShape::kGitHub) {
-        const std::string& reason = outcome.result.reason;
-        if (reason == "http-401" || reason == "http-403") {
-          LogGitHubAuthRejected(reason.substr(5));
-        }
-      }
       if (!outcome.result.ok && hosts[i].shape == UploadShape::kDrive) {
         // Every Drive failure names a reason and then falls through to the
         // next host exactly as any other host failure does.

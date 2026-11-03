@@ -222,15 +222,12 @@ bool AimpDiscordPresence::Load() {
   const std::string cover_cache_path = ResolveCoverCachePath(settings.cover_cache);
   CoverPublisher::Configure(cover_cache_path);
   // The preferred host chain: "auto" leads with Drive when its credentials are
-  // configured, otherwise GitHub. A typo in CoverHost is read as "auto", so the
-  // chain is never left empty.
+  // configured, otherwise the keyless hosts. A typo in CoverHost - or a legacy
+  // "github" value - is read as "auto", so the chain is never left empty and
+  // no removed host can enter it.
   CoverPublisher::ConfigureHost(Utils::ToString(settings.cover_host));
-  // The permanent GitHub host. The token is handed to the publisher and lives
-  // only in memory from here on: it is never logged, never written into the
-  // cache, and sent only to api.github.com. An empty token simply leaves the
-  // GitHub host out of the list, so the chain behaves as it did before.
-  CoverPublisher::ConfigureAuth(Utils::ToString(settings.cover_token),
-                                Utils::ToString(settings.cover_repo));
+  // Legacy CoverToken/CoverRepo are ignored without error: the GitHub host is
+  // gone, so no token is read and nothing is configured for it.
   // The Google Drive host. The client secret stays in memory, and the refresh
   // token goes to drive-token.txt next to the cover cache. The first publish
   // that reaches Drive opens the browser for a one-time consent on the cover
@@ -281,8 +278,8 @@ void AimpDiscordPresence::LoadConfig() {
   LoadConfigValue(config, L"DiscordPresence\\UseAlbumArtOnline", &settings.use_albumart_online);
   LoadConfigValue(config, L"DiscordPresence\\LocalCover", &settings.local_cover);
   LoadConfigValue(config, L"DiscordPresence\\CoverCache", &settings.cover_cache);
-  LoadConfigValue(config, L"DiscordPresence\\CoverToken", &settings.cover_token);
-  LoadConfigValue(config, L"DiscordPresence\\CoverRepo", &settings.cover_repo);
+  // Legacy CoverToken/CoverRepo keys are deliberately not read: they are
+  // ignored without error.
   LoadConfigValue(config, L"DiscordPresence\\CoverHost", &settings.cover_host);
   LoadConfigValue(config, L"DiscordPresence\\DriveClientId", &settings.drive_client_id);
   LoadConfigValue(config, L"DiscordPresence\\DriveClientSecret", &settings.drive_client_secret);

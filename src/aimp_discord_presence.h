@@ -149,16 +149,13 @@ class AimpDiscordPresence :
     // cover-cache.txt next to the plugin DLL; a bare or relative name resolves
     // there as well, an absolute path is used as given.
     std::wstring cover_cache;
-    // Permanent, user-owned GitHub upload host. `cover_token` is a fine-grained
-    // personal access token; empty (the default) skips the GitHub host entirely.
-    // `cover_repo` is "owner/name" and defaults to the owner's art repo. The
-    // token is never logged, cached, or written anywhere by the plugin.
-    std::wstring cover_token;
-    std::wstring cover_repo = L"nathwn12/aimp-discord-presence-art";
+    // Legacy GitHub upload host, removed: CoverToken/CoverRepo in an existing
+    // AIMP.ini are ignored without error and enable no host. Only Google
+    // Drive plus the anonymous keyless hosts remain.
     // Preferred cover host: "auto" (the default) uses Google Drive when its
-    // credentials exist, otherwise GitHub when a token exists, and falls back to
-    // the anonymous keyless hosts either way. "drive", "github" and "keyless"
-    // pin the preference; the keyless hosts always remain the last resort.
+    // credentials exist, and falls back to the anonymous keyless hosts either
+    // way. "drive" and "keyless" pin the preference; a legacy "github" value
+    // reads as "auto". The keyless hosts always remain the last resort.
     std::wstring cover_host = L"auto";
     // Google Drive upload host: the owner's own OAuth desktop client. With
     // either value empty (the default) Drive is simply absent from the chain.
