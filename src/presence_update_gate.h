@@ -209,6 +209,44 @@ class PresenceUpdateGate {
   const std::string& pending_key() const { return pending_key_; }
   size_t sample_count() const { return samples_.size(); }
 
+  // Snapshot for the per-tick cover-source decision. Pure data: the plugin
+  // fills it from its mutex-guarded slots, then asks CoverSourcePending, so a
+  // cover that completes between the artwork poll and the pending check is
+  // never misread as a miss.
+  struct CoverSourceState {
+    // Local upload queued/running for the current image.
+    bool local_pending = false;
+    // Finished local result ready but not yet applied for the current image.
+    bool local_result_pending = false;
+    bool online_requested = false;
+    // Whether the online resolver has answered the current album key.
+    bool online_key_matches = false;
+    // Whether that answer carries a URL (empty means definitive miss).
+    bool online_url_nonempty = false;
+    // Whether the card already carries a real cover (applied).
+    bool cover_ready = false;
+  };
+
+  // True while a cover for the current track can still resolve. A ready cover
+  // already on the card is never pending; a ready-but-unapplied local result
+  // and an arrived-but-unapplied online URL are pending (hold, do not send
+  // the placeholder); a matching key with an empty URL is the definitive miss.
+  static bool CoverSourcePending(const CoverSourceState& state) {
+    if (state.cover_ready) {
+      return false;
+    }
+    if (state.local_pending || state.local_result_pending) {
+      return true;
+    }
+    if (!state.online_requested) {
+      return false;
+    }
+    if (!state.online_key_matches) {
+      return true;
+    }
+    return state.online_url_nonempty;
+  }
+
  private:
   static uint64_t MedianOf(const std::vector<uint64_t>& samples) {
     std::vector<uint64_t> sorted = samples;

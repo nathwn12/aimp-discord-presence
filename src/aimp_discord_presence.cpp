@@ -793,36 +793,50 @@ bool AimpDiscordPresence::ApplyPendingArtwork() {
     applied_album = track_album_;
   }
 
+  // An applied online cover settles its lookup: without this the non-empty URL
+  // with a matching key would read as pending forever.
+  if (applied_source == "online") {
+    online_requested_ = false;
+  }
+
   LogCover("large-image applied artist=\"" + applied_artist + "\" album=\"" +
            applied_album + "\" source=" + applied_source + " url=" + applied_image);
   return true;
 }
 
 bool AimpDiscordPresence::HasPendingCoverSource() {
-  // Local upload queued or running for the current image. A finished result
-  // (ready flag) is settled, not pending: success would already read as
-  // cover-ready, failure as a definitive local miss.
-  bool local_pending = false;
+  PresenceUpdateGate::CoverSourceState state;
+  state.cover_ready =
+      last_large_image_ != PresenceLayout::kTransparentLargeImageUrl;
+
+  // Local upload queued, running, or finished-but-unapplied for the current
+  // image. The ready flag matters: a result that lands between the artwork
+  // poll and this check is still pending (hold), never a miss.
   if (!local_cover_sha_.empty()) {
     std::lock_guard<std::mutex> lock(cover_mutex_);
     if (cover_has_request_ && cover_request_hash_ == local_cover_sha_) {
-      local_pending = true;
+      state.local_pending = true;
     } else if (cover_inflight_hash_ == local_cover_sha_) {
-      local_pending = true;
+      state.local_pending = true;
+    } else if (cover_result_ready_ && cover_result_hash_ == local_cover_sha_) {
+      state.local_result_pending = true;
     }
   }
 
-  // Online lookup requested for the current track but unanswered. An arrived
-  // callback settles it even when the URL is empty (definitive miss).
-  bool online_pending = false;
+  // Online lookup requested for the current track. Unanswered (key mismatch)
+  // is pending; a matching key with a non-empty URL arrived but is not yet
+  // applied (pending); a matching key with an empty URL is the definitive
+  // miss. An applied cover is never pending (cover_ready above).
+  state.online_requested = online_requested_;
   if (online_requested_) {
     const std::string album_key =
         AlbumArt::BuildAlbumKey(track_artist_, track_album_, track_file_);
     std::lock_guard<std::mutex> lock(presence_mutex_);
-    online_pending = (artwork_key_ != album_key);
+    state.online_key_matches = (artwork_key_ == album_key);
+    state.online_url_nonempty = !artwork_url_.empty();
   }
 
-  return local_pending || online_pending;
+  return PresenceUpdateGate::CoverSourcePending(state);
 }
 
 std::string AimpDiscordPresence::ResolveLargeImageLocked(const std::string& album_key,

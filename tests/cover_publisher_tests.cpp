@@ -2487,6 +2487,73 @@ void TestPresenceUpdateGateTicks() {
   }
 }
 
+// --- Presence update gate: tick race ----------------------------------------
+//
+// A cover that completes between the artwork poll and the pending-source check
+// must hold, never send the placeholder as a miss. Pure headless proof for the
+// CoverSourcePending decision plus the gate Hold/Release it drives.
+void TestPresenceUpdateGateRace() {
+  using Decision = PresenceUpdateGate::Decision;
+  using State = PresenceUpdateGate::CoverSourceState;
+
+  // Local result ready but not yet applied -> pending: hold, do not misread as
+  // a miss. This is the exact window the verdict names.
+  {
+    State state;
+    state.local_result_pending = true;
+    Check(PresenceUpdateGate::CoverSourcePending(state),
+          "race: local ready-not-applied -> pending");
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("race-local", false, false, 0) == Decision::Hold,
+          "race: local held at 0");
+    // The 1 s tick still has a source: hold, not a definitive miss.
+    Check(gate.OnTick(1000) == Decision::Hold, "race: local ready -> Hold");
+    Check(gate.OnArtworkReady(1000) == Decision::Send,
+          "race: local applied -> Send with cover");
+  }
+
+  // Online cover arrived but not yet applied -> pending: hold.
+  {
+    State state;
+    state.online_requested = true;
+    state.online_key_matches = true;
+    state.online_url_nonempty = true;
+    Check(PresenceUpdateGate::CoverSourcePending(state),
+          "race: online arrived-not-applied -> pending");
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("race-online", false, false, 0) == Decision::Hold,
+          "race: online held at 0");
+    Check(gate.OnTick(1000) == Decision::Hold, "race: online arrived -> Hold");
+  }
+
+  // Online empty arrived (matching key, empty URL) -> definitive miss: release.
+  {
+    State state;
+    state.online_requested = true;
+    state.online_key_matches = true;
+    state.online_url_nonempty = false;
+    Check(!PresenceUpdateGate::CoverSourcePending(state),
+          "race: online empty arrived -> miss");
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("race-miss", false, false, 0) == Decision::Hold,
+          "race: miss held at 0");
+    Check(gate.OnDefinitiveMiss(1000) == Decision::Send,
+          "race: online empty -> miss/release");
+  }
+
+  // Applied cover (real image already on the card) -> not pending, even with a
+  // matching non-empty online answer still recorded.
+  {
+    State state;
+    state.online_requested = true;
+    state.online_key_matches = true;
+    state.online_url_nonempty = true;
+    state.cover_ready = true;
+    Check(!PresenceUpdateGate::CoverSourcePending(state),
+          "race: applied cover -> not pending");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2538,6 +2605,7 @@ int main(int argc, char** argv) {
   TestPresenceUpdateGate();
   TestPresenceUpdateGateAdaptive();
   TestPresenceUpdateGateTicks();
+  TestPresenceUpdateGateRace();
 
   std::printf("cover_publisher tests: %d checks, %d failures\n", g_checks, g_failures);
   std::printf("RESULT: %s\n", g_failures == 0 ? "PASS" : "FAIL");
