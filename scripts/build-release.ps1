@@ -74,8 +74,15 @@ Invoke-Phase 'test' {
     'src\local_art.cpp',
     'src\presence_layout.h', 'src\utils.h'
   ) | ForEach-Object { Join-Path $Repo $_ }
+  $artSources = @(
+    'tests\album_art_tests.cpp',
+    'src\album_art.cpp', 'src\album_art.h'
+  ) | ForEach-Object { Join-Path $Repo $_ }
+  $ArtTestExe = Join-Path $TestDir 'album_art_tests.exe'
   $newest = ($sources | ForEach-Object { (Get-Item $_).LastWriteTime } | Measure-Object -Maximum).Maximum
-  if (-not (Test-Path $TestExe) -or (Get-Item $TestExe).LastWriteTime -lt $newest) {
+  $newestArt = ($artSources | ForEach-Object { (Get-Item $_).LastWriteTime } | Measure-Object -Maximum).Maximum
+  if ((-not (Test-Path $TestExe)) -or ((Get-Item $TestExe).LastWriteTime -lt $newest) -or
+      (-not (Test-Path $ArtTestExe)) -or ((Get-Item $ArtTestExe).LastWriteTime -lt $newestArt)) {
     if (-not (Test-Path $TestDir)) { New-Item -ItemType Directory $TestDir | Out-Null }
     # cl needs the MSVC environment; import it once via VsDevCmd.
     # Portable VS discovery: vswhere -latest, with VSINSTALLDIR fallback.
@@ -92,18 +99,29 @@ Invoke-Phase 'test' {
       $i = $line.IndexOf('=')
       if ($i -gt 0) { Set-Item -Path ("env:" + $line.Substring(0, $i)) -Value $line.Substring($i + 1) }
     }
-    & cl /nologo /std:c++17 /W4 /WX /EHsc `
-      "/I$(Join-Path $Repo 'lib\aimp-sdk\Sources\Cpp')" `
-      "/I$(Join-Path $Repo 'lib\aimp-glue')" `
-      (Join-Path $Repo 'tests\cover_publisher_tests.cpp') `
-      (Join-Path $Repo 'src\album_art.cpp') `
-      "/Fo$TestDir\\" "/Fe$TestExe" /link winhttp.lib
-    Assert-Ok 'cl (test build)'
+    if ((-not (Test-Path $TestExe)) -or ((Get-Item $TestExe).LastWriteTime -lt $newest)) {
+      & cl /nologo /std:c++17 /W4 /WX /EHsc `
+        "/I$(Join-Path $Repo 'lib\aimp-sdk\Sources\Cpp')" `
+        "/I$(Join-Path $Repo 'lib\aimp-glue')" `
+        (Join-Path $Repo 'tests\cover_publisher_tests.cpp') `
+        (Join-Path $Repo 'src\album_art.cpp') `
+        "/Fo$TestDir\\" "/Fe$TestExe" /link winhttp.lib
+      Assert-Ok 'cl (test build)'
+    }
+    if ((-not (Test-Path $ArtTestExe)) -or ((Get-Item $ArtTestExe).LastWriteTime -lt $newestArt)) {
+      & cl /nologo /std:c++17 /W4 /WX /EHsc `
+        (Join-Path $Repo 'tests\album_art_tests.cpp') `
+        (Join-Path $Repo 'src\album_art.cpp') `
+        "/Fo$TestDir\\" "/Fe$ArtTestExe" /link winhttp.lib
+      Assert-Ok 'cl (album_art test build)'
+    }
   } else {
-    Write-Host 'test build: exe newer than all sources, skipping recompile'
+    Write-Host 'test build: exes newer than all sources, skipping recompile'
   }
   & $TestExe
   Assert-Ok 'cover_publisher_tests'
+  & $ArtTestExe
+  Assert-Ok 'album_art_tests'
 }
 
 # --- Phase 4: version-stamped copy --------------------------------------------

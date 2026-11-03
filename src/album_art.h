@@ -34,16 +34,34 @@
 
 // Resolves album art URLs from keyless public APIs on a background worker so
 // AIMP's message thread is never blocked on the network. The providers are
-// tried in order:
+// tried in preference order:
 //
 //   1. Deezer album search (`cover_xl`).
 //   2. iTunes Search API (`artworkUrl100`, upscaled to 600x600).
 //   3. MusicBrainz release-group search for an MBID, then the Cover Art Archive
-//      front cover for that MBID.
+//      front cover for that MBID; on a miss the WS/2 release search is tried
+//      with the Cover Art Archive `/release/<mbid>/front-500` cover.
+//   4. Wikipedia pageimages (`generator=search`, `pithumbsize=600`,
+//      `pilicense=any`) with an exact-title guard.
+//   5. Discogs database search, then `GET /releases/<id>` for `images[0].uri`.
+//
+// The lookup runs in two tiers: Tier 1 (Deezer + iTunes) runs in parallel and
+// wins whenever either hits; only when both miss does Tier 2 (MusicBrainz +
+// Wikipedia + Discogs) run in parallel. Tiering keeps the common case to one
+// round trip and keeps the enrichment hosts (Discogs 60 req/min unauth) off
+// the hot path. Wall time is the slowest provider in the tier that ran, not
+// the sum.
 //
 // No provider needs an API key. A hit is only accepted when a light identity
 // guard confirms the hit really is the requested artist + album, because
 // free-text search happily ranks an unrelated album first.
+//
+// An empty album tag is resolved first: Deezer track search with the strict
+// `artist:"..." track:"..."` syntax and iTunes `entity=song` are queried for
+// the track, guarded by artist + title, and the returned album
+// (`album.title` / `collectionName`) becomes the effective album for the art
+// lookup. When resolution fails the lookup falls back to the artist-only
+// search.
 //
 // The resolved URL is handed to a callback that runs on the worker thread; the
 // callback must not call AIMP services, it should only publish the value to
@@ -62,6 +80,9 @@ enum class Provider {
   kDeezer,
   kItunes,
   kMusicBrainz,
+  kMusicBrainzRelease,
+  kWikipedia,
+  kDiscogs,
 };
 
 // --- Pure helpers, unit tested separately ---------------------------------
@@ -89,13 +110,39 @@ std::string ExtractJsonStringField(const std::string& json, const std::string& k
 std::string UpscaleItunesArtwork(const std::string& url);
 
 std::string BuildDeezerSearchUrl(const std::string& artist, const std::string& album);
+// Deezer track search with the strict `artist:"..." track:"..."` syntax, used
+// only to resolve an album title for an empty album tag. Returns an empty
+// string when artist or track is empty.
+std::string BuildDeezerTrackSearchUrl(const std::string& artist,
+                                      const std::string& track);
 std::string BuildItunesSearchUrl(const std::string& artist, const std::string& album);
+// iTunes song search (`entity=song`), used only to resolve an album title for
+// an empty album tag. Returns an empty string when artist or track is empty.
+std::string BuildItunesSongSearchUrl(const std::string& artist,
+                                     const std::string& track);
 // MusicBrainz WS/2 release-group search. Requested at most once per second.
 std::string BuildMusicBrainzReleaseGroupUrl(const std::string& artist,
                                             const std::string& album);
+// MusicBrainz WS/2 release search (fallback when the release-group has no
+// cover). Requested at most once per second, after the release-group attempt.
+std::string BuildMusicBrainzReleaseSearchUrl(const std::string& artist,
+                                             const std::string& album);
 // Cover Art Archive cover for an MBID. Returns an empty string when `mbid` is
 // not a UUID, so a malformed search response cannot inject a path.
 std::string BuildCoverArtArchiveUrl(const std::string& mbid);
+// Cover Art Archive cover for a release MBID (`/release/<mbid>/front-500`).
+// Returns an empty string when `mbid` is not a UUID.
+std::string BuildCoverArtArchiveReleaseUrl(const std::string& mbid);
+// Discogs database search (keyless metadata; search rows carry no images, so a
+// second `GET /releases/<id>` follows). Returns an empty string when there is
+// nothing to query.
+std::string BuildDiscogsSearchUrl(const std::string& artist, const std::string& album);
+// Discogs release detail for `release_id`. Returns an empty string when the id
+// is not all digits, so a malformed search response cannot inject a path.
+std::string BuildDiscogsReleaseUrl(const std::string& release_id);
+// Wikipedia pageimages with `generator=search` (keyless fallback thumbnails).
+// Returns an empty string when there is nothing to query.
+std::string BuildWikipediaSearchUrl(const std::string& artist, const std::string& album);
 
 // Extracts the artwork URL for a provider from a search response. Returns an
 // empty string when no usable (https, <= 300 characters) URL is present, and
@@ -105,6 +152,24 @@ std::string ExtractArtworkUrl(const std::string& body, Provider provider);
 // Extracts the MBID of the first release group in a MusicBrainz WS/2 search
 // response.
 std::string ExtractMusicBrainzReleaseGroupId(const std::string& body);
+// Extracts the MBID of the first release in a MusicBrainz WS/2 release search
+// response.
+std::string ExtractMusicBrainzReleaseId(const std::string& body);
+// Extracts the numeric release id of the first Discogs database search hit.
+// Returns an empty string when no hit carries one.
+std::string ExtractDiscogsReleaseId(const std::string& body);
+// Extracts the album title of a Deezer track-search hit (`album.title`).
+std::string ExtractDeezerTrackAlbumTitle(const std::string& body);
+// Extracts the album title of an iTunes song-search hit (`collectionName`).
+std::string ExtractItunesAlbumTitle(const std::string& body);
+// Extracts the title of the first Wikipedia pageimages page.
+std::string ExtractWikipediaPageTitle(const std::string& body);
+// Extracts the thumbnail URL of the first Wikipedia pageimages page. Returns
+// an empty string when the page carries no usable (https, <= 300) thumbnail.
+std::string ExtractWikipediaThumbnailUrl(const std::string& body);
+// Extracts the first usable cover URL (`images[].uri`) from a Discogs release
+// detail document.
+std::string ExtractDiscogsImageUrl(const std::string& body);
 
 // True when a provider hit's identity agrees with the requested artist/album,
 // so a guard check can be exercised without a provider-specific response
@@ -126,8 +191,19 @@ bool MetadataMatches(const std::string& expected, const std::string& candidate);
 // When `album` is empty the search is artist-only, so the hit's album is not
 // compared and any album it names is accepted; the hit still has to name a
 // non-empty album for the provider extractor to consider it a usable hit.
+// Wikipedia compares the page title against the requested album (or artist when
+// the album is empty); Discogs compares its `title` ("Artist - Album") against
+// `artist + " " + album` (or the artist alone for an artist-only lookup).
 bool SearchResultMatches(const std::string& body, Provider provider,
                          const std::string& artist, const std::string& album);
+
+// Track-level guards for album-title resolution: true only when the first hit
+// names the requested artist AND track title, and carries a non-empty album
+// title for the caller to adopt.
+bool DeezerTrackResultMatches(const std::string& body, const std::string& artist,
+                              const std::string& track);
+bool ItunesSongResultMatches(const std::string& body, const std::string& artist,
+                             const std::string& track);
 
 // --- Background resolver ---------------------------------------------------
 
@@ -135,6 +211,8 @@ class Resolver {
  public:
   // `file_path` is the caller's identity discriminator (see BuildAlbumKey),
   // echoed back so the caller rebuilds the exact key it requested with.
+  // `track` is the track title (UTF-8); when `album` is empty it is used to
+  // resolve the album title before the art lookup runs.
   using Callback = std::function<void(const std::string& artist,
                                       const std::string& album,
                                       const std::string& file_path,
@@ -158,28 +236,46 @@ class Resolver {
   void SetLogger(Logger logger);
 
   // Queues a lookup for `artist` + `album` (UTF-8). `file_path` is the opaque
-  // identity discriminator that keys the cache and is echoed to the callback.
+  // identity discriminator that keys the cache and is echoed to the callback;
+  // `track` is the track title used only to resolve an empty `album`.
   // Replaces any pending request; stale completions are dropped.
   void Request(const std::string& artist, const std::string& album,
-               const std::string& file_path);
+               const std::string& file_path, const std::string& track = std::string());
 
   // Blocking lookup (network + cache). Exposed for the worker and tests.
+  // `track` resolves an empty `album` before the art lookup runs.
   std::string Lookup(const std::string& artist, const std::string& album,
-                     const std::string& file_path);
+                     const std::string& file_path,
+                     const std::string& track = std::string());
+
+  // Blocking single-provider lookup (network, no cache). Exposed so offline
+  // tests pin the pure helpers and live tests prove each provider on the wire.
+  // `answered` is true when the provider gave a definitive answer (even a
+  // miss) and false on a transport failure, which the caller must not cache
+  // as "no artwork". May be nullptr when the caller does not need it.
+  std::string LookupFromProvider(Provider provider, const std::string& artist,
+                                 const std::string& album, bool* answered);
+
+  // Resolves an album title for an empty album tag from the track title, via
+  // Deezer strict track search then iTunes `entity=song`, each guarded by
+  // artist + title. Returns "" when neither resolves.
+  std::string ResolveAlbumTitle(const std::string& artist, const std::string& track);
 
   void Shutdown();
 
  private:
   void WorkerMain();
   std::string LookupUncached(const std::string& artist, const std::string& album,
-                             bool* definitive);
+                             const std::string& track, bool* definitive);
   // Online-rung diagnostics; called on the worker thread.
   void Log(const std::string& line);
   void LogOutcome(const std::string& artist, const std::string& album,
                   const std::string& url);
-  // MusicBrainz allows one request per second; the worker is the only caller,
-  // so an elapsed-time gate is enough to guarantee that.
+  // MusicBrainz allows one request per second; Discogs allows 60 requests per
+  // minute unauthenticated, so it gets the same 1 req/s gate. Both gates are
+  // thread-safe: Tier 2 runs its providers on concurrent threads.
   void WaitForMusicBrainzSlot();
+  void WaitForDiscogsSlot();
   bool TakeCached(const std::string& key, std::string* url);
   void StoreCached(const std::string& key, const std::string& url);
 
@@ -198,6 +294,7 @@ class Resolver {
   std::string request_artist_;
   std::string request_album_;
   std::string request_file_path_;
+  std::string request_track_;
 
   Callback callback_;
   Logger logger_;
@@ -205,8 +302,11 @@ class Resolver {
   std::unordered_map<std::string, std::string> cache_;
   std::deque<std::string> cache_order_;
 
-  // Worker thread only.
+  // Rate-gate state. Guarded by gate_mutex_ (not mutex_) so Tier 2 threads and
+  // live tests share it safely.
+  std::mutex gate_mutex_;
   std::chrono::steady_clock::time_point last_musicbrainz_request_{};
+  std::chrono::steady_clock::time_point last_discogs_request_{};
 
   static constexpr size_t kMaxCacheEntries = 200;
 };

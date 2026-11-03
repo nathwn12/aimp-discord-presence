@@ -532,10 +532,11 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
             local_art_found, local_published)) {
       // Non-blocking: the worker resolves the URL and publishes it, the next
       // notification applies it. The album tag is not required: an album-less
-      // track still gets a keyless lookup, keyed by artist + file path. A local
+      // track still gets a keyless lookup, keyed by artist + file path, with
+      // the track title resolving the album first. A local
       // cover that was found never suppresses this request: if its publish
       // fails, the online rung below is what may still supply an image.
-      album_art_.Request(info.artist, info.album, info.file);
+      album_art_.Request(info.artist, info.album, info.file, info.title);
     } else {
       std::lock_guard<std::mutex> lock(presence_mutex_);
       artwork_key_.clear();

@@ -30,3 +30,13 @@ add_executable( payload_tests
 )
 target_include_directories( payload_tests PRIVATE ${SRC_DIR} )
 add_test( NAME payload_tests COMMAND payload_tests )
+
+# Keyless album-art chain: pure-helper offline tests plus live provider tests
+# behind `--live` (ctest runs the offline default, no network).
+add_executable( album_art_tests
+  tests/album_art_tests.cpp
+  ${SRC_DIR}/album_art.cpp
+)
+target_include_directories( album_art_tests PRIVATE ${SRC_DIR} )
+target_link_libraries( album_art_tests PRIVATE winhttp )
+add_test( NAME album_art_tests COMMAND album_art_tests )
