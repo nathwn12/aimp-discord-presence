@@ -33,11 +33,17 @@
 //
 // Adaptive wait: the gate learns from recent covers, recording the time from
 // track start to first real cover (local publish or online hit) and keeping
-// the last 8 samples. The wait budget is clamp(2 x median, 250 ms, 1500 ms),
-// defaulting to 700 ms with no history. A rapid skip (previous track lasted
-// under 1.5 s) caps the wait at 300 ms. A cached/ready cover or a track with
-// no cover source pending sends immediately; a definitive empty lookup or a
-// failed publish releases a held card early.
+// the last 8 samples. The wait budget is clamp(2 x median, 1000 ms, 3000 ms),
+// defaulting to 1500 ms with no history. A rapid skip (previous track lasted
+// under 1.5 s) targets 1000 ms. A cached/ready cover or a track with no cover
+// source pending sends immediately; a definitive empty lookup or a failed
+// publish releases a held card early.
+//
+// Tick honesty: AIMP's position tick fires every 1 s, and the plugin only
+// re-evaluates the gate there, so the budget is a target evaluated on the
+// next tick, not an exact millisecond deadline. A 1500 ms budget held from t
+// sends on the 2 s tick (up to 1 s late); a 3000 ms budget sends on the 3 s
+// tick. Sub-second precision is not promised.
 //
 // Pure and headless: time is injected as monotonic milliseconds (the plugin
 // passes GetTickCount64()), so the offline tests drive the whole sequence
@@ -48,14 +54,15 @@ class PresenceUpdateGate {
   enum class Decision { Skip, Hold, Send };
 
   // Absolute ceiling for any hold; the placeholder is published at the latest
-  // by now + kHoldMs.
-  static constexpr uint64_t kHoldMs = 1500;
-  // Wait with no history to learn from.
-  static constexpr uint64_t kDefaultHoldMs = 700;
-  // Floor for a learned wait.
-  static constexpr uint64_t kMinHoldMs = 250;
-  // Rapid-skip cap: the previous track lasted less than kRapidSkipThresholdMs.
-  static constexpr uint64_t kRapidSkipHoldMs = 300;
+  // on the first tick at or after now + kHoldMs.
+  static constexpr uint64_t kHoldMs = 3000;
+  // Wait with no history to learn from (one tick holds, the next sends).
+  static constexpr uint64_t kDefaultHoldMs = 1500;
+  // Floor for a learned wait: one tick.
+  static constexpr uint64_t kMinHoldMs = 1000;
+  // Rapid-skip target: the previous track lasted less than
+  // kRapidSkipThresholdMs, so the next wait targets one tick.
+  static constexpr uint64_t kRapidSkipHoldMs = 1000;
   static constexpr uint64_t kRapidSkipThresholdMs = 1500;
   static constexpr size_t kMaxSamples = 8;
 
