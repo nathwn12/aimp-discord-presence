@@ -39,6 +39,7 @@
 #include "discord_ipc.h"
 #include "local_art.h"
 #include "presence_layout.h"
+#include "presence_update_gate.h"
 
 class AimpDiscordPresence :
   public Aimp::Implements<Aimp::Plugin, Aimp::ExternalSettingsDialog> {
@@ -226,6 +227,9 @@ class AimpDiscordPresence :
   std::string track_album_;
   // Identity discriminator for album-less tracks; AIMP message thread only.
   std::string track_file_;
+  // Track-change flash gate: holds a NEW track's card until its cover resolves
+  // or the 1.5 s deadline, then publishes once. AIMP message thread only.
+  PresenceUpdateGate update_gate_;
   // Tag values of the track the card currently describes, for button template
   // expansion. AIMP message thread only.
   PresenceLayout::TrackFields track_fields_;

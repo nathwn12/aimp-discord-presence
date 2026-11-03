@@ -379,6 +379,7 @@ void AimpDiscordPresence::OnPlayerState(DWORD, int param1) {
   if (param1 == kPlayerStateStopped ||
       (param1 == kPlayerStatePaused && !settings.status.use_pause)) {
     track_key_.clear();
+    update_gate_.Reset();
     // The worker is the only sender: record that presence must go away and
     // wake it. A queued update must not resurrect the presence after the clear,
     // and the next playback should publish immediately rather than wait out an
@@ -434,7 +435,20 @@ void AimpDiscordPresence::OnPropertyValue(DWORD, int param1) {
     }
   }
 
-  if (ApplyPendingArtwork()) {
+  // A held NEW track is released here on artwork or on the gate deadline,
+  // then published once.
+  const bool artwork_applied = ApplyPendingArtwork();
+  if (update_gate_.HasPending()) {
+    const uint64_t now_ms = MonotonicMillisNow();
+    const PresenceUpdateGate::Decision release =
+        artwork_applied ? update_gate_.OnArtworkReady(now_ms)
+                        : update_gate_.OnTick(now_ms);
+    if (release == PresenceUpdateGate::Decision::Send) {
+      SendActivity();
+    }
+    return;
+  }
+  if (artwork_applied) {
     SendActivity();
   }
 }
@@ -448,8 +462,20 @@ void AimpDiscordPresence::OnPlayerUpdatePosition() {
   // The artwork lookup is asynchronous (it can take seconds), so by the time
   // it resolves the seek-only property event may have already passed. This
   // event fires every second while a track plays, so the late result is
-  // applied and sent promptly.
-  if (ApplyPendingArtwork()) {
+  // applied and sent promptly. A held NEW track is released here on artwork
+  // or on the gate deadline, then published once.
+  const bool artwork_applied = ApplyPendingArtwork();
+  if (update_gate_.HasPending()) {
+    const uint64_t now_ms = MonotonicMillisNow();
+    const PresenceUpdateGate::Decision release =
+        artwork_applied ? update_gate_.OnArtworkReady(now_ms)
+                        : update_gate_.OnTick(now_ms);
+    if (release == PresenceUpdateGate::Decision::Send) {
+      SendActivity();
+    }
+    return;
+  }
+  if (artwork_applied) {
     SendActivity();
   }
 }
@@ -481,6 +507,12 @@ AimpDiscordPresence::TrackInfo AimpDiscordPresence::ReadTrackInfo() {
 
 void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
   const TrackInfo info = ReadTrackInfo();
+
+  // Never publish the "AIMP" fallback card: empty file info means no track.
+  if (info.file.empty()) {
+    update_gate_.Reset();
+    return;
+  }
 
   // Local (offline) cover: extract the track's own artwork on the message
   // thread once per new track, log its fingerprint, and either apply a URL
@@ -544,6 +576,16 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
     }
   }
 
+  // Flash gate: a NEW track without a real cover is held until artwork
+  // resolves or the 1.5 s deadline, then published once. A cached cover sends
+  // immediately and a same-track update always sends.
+  const bool cover_ready =
+      last_large_image_ != PresenceLayout::kTransparentLargeImageUrl;
+  const PresenceUpdateGate::Decision gate_decision =
+      update_gate_.OnTrack(info.key, false, cover_ready, MonotonicMillisNow());
+  if (gate_decision == PresenceUpdateGate::Decision::Hold) {
+    return;
+  }
   SendActivity();
 }
 

@@ -19,6 +19,7 @@
 #include "../src/album_art.h"
 #include "../src/local_art.cpp"
 #include "../src/presence_layout.h"
+#include "../src/presence_update_gate.h"
 
 #include <cstdio>
 #include <cstring>
@@ -2226,6 +2227,78 @@ void TestConsentErrorToken() {
   }
 }
 
+// --- Presence update gate: kill the track-change flash ----------------------
+//
+// A NEW track's card is held until its cover resolves or the 1.5 s monotonic
+// deadline, then published once. Empty file info is never published. Pure and
+// headless: monotonic time is injected, so the whole sequence runs offline.
+void TestPresenceUpdateGate() {
+  using Decision = PresenceUpdateGate::Decision;
+
+  Check(PresenceUpdateGate::kHoldMs == 1500, "gate: the hold deadline is 1.5 s");
+
+  // Empty file info is never published (the "AIMP" fallback card).
+  PresenceUpdateGate gate;
+  Check(gate.OnTrack("Daft Punk\nDiscovery\nOne More Time", true, false, 0) ==
+            Decision::Skip,
+        "gate: empty info -> Skip");
+  Check(!gate.HasPending(), "gate: Skip holds nothing");
+
+  // A NEW track with no cover is held, not sent.
+  const std::string track_a = "Daft Punk\nDiscovery\nOne More Time";
+  Check(gate.OnTrack(track_a, false, false, 1000) == Decision::Hold,
+        "gate: new track no cover -> Hold");
+  Check(gate.HasPending(), "gate: Hold has pending");
+  Check(gate.pending_key() == track_a, "gate: Hold names the new track");
+  Check(gate.deadline_ms() == 1000 + PresenceUpdateGate::kHoldMs,
+        "gate: the deadline is monotonic now + 1.5 s");
+  Check(!gate.artwork_ready(), "gate: a held track starts not artwork-ready");
+  Check(gate.OnTick(1000 + PresenceUpdateGate::kHoldMs - 1) == Decision::Hold,
+        "gate: before the deadline still Hold");
+
+  // The held card is released once when the cover resolves.
+  Check(gate.OnArtworkReady(1200) == Decision::Send, "gate: artwork ready -> Send");
+  Check(!gate.HasPending(), "gate: artwork Send clears pending");
+  Check(gate.artwork_ready(), "gate: the artwork-ready flag is set on release");
+
+  // A NEW track with no cover at all is still published once, at the deadline.
+  PresenceUpdateGate gate_deadline;
+  const std::string track_b = "Daft Punk\nHomework\nAround the World";
+  Check(gate_deadline.OnTrack(track_b, false, false, 2000) == Decision::Hold,
+        "gate: second new track no cover -> Hold");
+  Check(gate_deadline.OnTick(2000 + PresenceUpdateGate::kHoldMs - 1) == Decision::Hold,
+        "gate: no cover before deadline -> Hold");
+  Check(gate_deadline.OnTick(2000 + PresenceUpdateGate::kHoldMs) == Decision::Send,
+        "gate: no cover at deadline -> Send");
+  Check(!gate_deadline.HasPending(), "gate: deadline Send clears pending");
+
+  // A NEW track whose cover is already cached sends immediately, never holds.
+  PresenceUpdateGate gate_cached;
+  const std::string track_c = "ZWE1HVNDXR\nLOVELY BASTARDS\nLOVELY BASTARDS";
+  Check(gate_cached.OnTrack(track_c, false, true, 5000) == Decision::Send,
+        "gate: cached cover -> Send immediately");
+  Check(!gate_cached.HasPending(), "gate: cached Send holds nothing");
+
+  // A same-track update always sends, even with no cover ready.
+  Check(gate_cached.OnTrack(track_c, false, false, 5100) == Decision::Send,
+        "gate: same-track update -> Send");
+  Check(!gate_cached.HasPending(), "gate: same-track Send holds nothing");
+
+  // A held same-track poll carrying artwork-ready also releases.
+  PresenceUpdateGate gate_same;
+  Check(gate_same.OnTrack(track_a, false, false, 7000) == Decision::Hold,
+        "gate: new track holds again");
+  Check(gate_same.OnTrack(track_a, false, true, 7100) == Decision::Send,
+        "gate: same track artwork ready -> Send");
+  Check(!gate_same.HasPending(), "gate: same-track artwork Send clears pending");
+
+  // Stop/pause-clear resets the gate: the next track holds as new again.
+  gate_same.Reset();
+  Check(!gate_same.HasPending(), "gate: Reset clears pending");
+  Check(gate_same.OnTrack(track_a, false, false, 8000) == Decision::Hold,
+        "gate: after Reset a new track holds again");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2274,6 +2347,7 @@ int main(int argc, char** argv) {
   TestLegacyCacheEntryReplaced(directory);
   TestConsentWaitDecision();
   TestConsentErrorToken();
+  TestPresenceUpdateGate();
 
   std::printf("cover_publisher tests: %d checks, %d failures\n", g_checks, g_failures);
   std::printf("RESULT: %s\n", g_failures == 0 ? "PASS" : "FAIL");
