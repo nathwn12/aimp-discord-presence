@@ -122,7 +122,7 @@ constexpr UINT kMaxImageDimension = 512;
 constexpr size_t kSkipReencodeMaxBytes = 256 * 1024;
 constexpr float kJpegQuality = 0.85f;
 
-constexpr wchar_t kAgentName[] = L"AIMP-Discord-Presence/2.0";
+constexpr wchar_t kAgentName[] = L"AIMP-Discord-Presence/2.2.0";
 
 // Upload hosts are tried in order until one returns a usable URL, and the chain
 // is policy-driven (CoverHost): "auto" - the default - leads with Drive when
