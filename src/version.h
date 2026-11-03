@@ -23,7 +23,7 @@
 
 #define PL_MANUAL_MAJOR         2
 #define PL_MANUAL_MINOR         2
-#define PL_MANUAL_RELEASE       0
+#define PL_MANUAL_RELEASE       1
 #define PL_MANUAL_BUILD         0
 
 #ifndef V_MAJOR
