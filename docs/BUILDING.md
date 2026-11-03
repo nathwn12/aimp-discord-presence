@@ -92,9 +92,10 @@ find the Profile folder location in AIMP's settings.)
 | `ApplicationID` | integer | Discord application ID used to publish the presence. The default is the shared upstream ID. You may substitute your own ID (create one in the [Discord developer portal](https://discord.com/developers/applications)). |
 | `Timestamp` | bool | Show playback timestamps. `0` = elapsed time, `1` = remaining time. |
 | `UseAlbumArt` | bool | Use the album art as the large image. `0` = off, `1` = on. |
-| `UseAlbumArtOnline` | bool | Allow **network** album-art lookups (Deezer, then iTunes, then MusicBrainz + Cover Art Archive). `0` = never go online; the card keeps the plugin's built-in placeholder image. `1` = allow online lookups. |
-| `LocalCover`, `CoverCache` | bool, string | Publish the track's own (offline) cover so Discord can fetch the real artwork. `LocalCover`: `0` = off, `1` = on (default); a published cover is used only after the upload proves retrievable. The local image is uploaded through a host chain - GitHub (only when `CoverToken` is set), catbox, uguu, then litterbox - and a host failure falls through to the online lookup, never straight to the placeholder. `CoverCache`: optional file that remembers published cover URLs by image hash. Empty (the default) resolves to `cover-cache.txt` beside the plugin DLL; a bare filename resolves there too, an absolute path is used as given. |
-| `CoverToken`, `CoverRepo` | string, string | **Optional** permanent GitHub upload host. `CoverToken` is a fine-grained personal access token with `contents: write` for the repository. An **empty token (the default) is fine**: it simply omits the GitHub host, and the keyless hosts handle the upload with no behaviour change. When set, GitHub is tried first, and the token is sent **only** to `api.github.com`; it is never logged, printed, or written to `CoverCache`. `CoverRepo`: the `owner/name` repository that receives the covers; empty (the default) uses `nathwn12/aimp-discord-presence-art`. |
+| `UseAlbumArtOnline` | bool | Allow **network** album-art lookups (Deezer album search, then iTunes album search, then MusicBrainz release-group with release fallback + Cover Art Archive, then Wikipedia pageimages, then Discogs search → release). `0` = never go online; the card keeps the plugin's built-in placeholder image. `1` = allow online lookups. An empty album tag is resolved from the track title first (Deezer track search, then iTunes song search). |
+| `LocalCover`, `CoverCache` | bool, string | Publish the track's own (offline) cover so Discord can fetch the real artwork. `LocalCover`: `0` = off, `1` = on (default); a published cover is used only after the upload proves retrievable. The local image is uploaded through a host chain — Google Drive (only when `DriveClientId` and `DriveClientSecret` are both set), then catbox, uguu, then litterbox — and a host failure falls through to the online lookup, never straight to the placeholder. `CoverCache`: optional file that remembers published cover URLs by image hash. Empty (the default) resolves to `cover-cache.txt` beside the plugin DLL; a bare filename resolves there too, an absolute path is used as given. |
+| `CoverHost` | `auto` / `drive` / `keyless` | Which host publishes the covers. `auto` (the default) uses Drive when `DriveClientId` and `DriveClientSecret` are both set, otherwise the keyless hosts; `drive` and `keyless` pin the preference, and the keyless hosts always remain the last resort. Case-insensitive, and any other value is read as `auto`. |
+| `DriveClientId`, `DriveClientSecret` | string, string | Your Google OAuth **Desktop app** client ID and matching client secret. Empty (the default) keeps Drive out of the chain entirely — the setup lives in [docs/GUIDE.md](GUIDE.md). The secret is sent only to Google's token endpoint; it is never logged or cached. Old GitHub cover keys left in an existing config are ignored without error: GitHub cover storage is unwired and Drive is the only permanent host. |
 | `StatusDisplayType` | int | What the member-list status text shows: `0` = app name, `1` = **artist** (the `state` line), `2` = **track title** (the `details` line). Default: `2`. |
 | `Name` | string | Application name shown above the activity card. Default: `Music`. Truncated to 128 characters; an empty value omits the field. |
 | `Details` | string | Template for line 2 of the card. Default: `{title}`. An empty expansion falls back to the artist, then to `AIMP`, so the line is never blank. |
@@ -149,14 +150,16 @@ Timestamp=1
 ; Use the album art as the large image. Default: 1
 UseAlbumArt=1
 
-; Allow network album-art lookups (Deezer, then iTunes, then MusicBrainz). 0 = always use the offline asset. Default: 1
+; Allow network album-art lookups (Deezer album, iTunes album, MusicBrainz + Cover
+; Art Archive, Wikipedia, Discogs). 0 = always use the offline asset. Default: 1
 UseAlbumArtOnline=1
 
-; Optional permanent GitHub cover host. Leave CoverToken empty for the default
-; keyless chain; the token is sent only to api.github.com and is never logged or
-; cached. CoverRepo defaults to the owner's art repository.
-CoverToken=
-CoverRepo=nathwn12/aimp-discord-presence-art
+; Permanent cover host: your own Google Drive (setup in docs/GUIDE.md).
+; CoverHost is auto (default), drive, or keyless; any other value reads as auto.
+; With both Drive keys empty the keyless hosts carry the upload.
+CoverHost=auto
+DriveClientId=1234567890-abc123.apps.googleusercontent.com
+DriveClientSecret=GOCSPX-xxxxxxxxxxxxxxxx
 
 ; Member-list status text: 0 = app name / 1 = artist / 2 = track title. Default: 2
 StatusDisplayType=2
@@ -198,9 +201,11 @@ enabled and AIMP has been restarted.
 **Album art is missing.**
 The large image is filled from online lookups only when both `UseAlbumArt=1` and
 `UseAlbumArtOnline=1`. If `UseAlbumArtOnline=0`, or the track cannot be matched by
-the keyless providers (Deezer `/search/album`, iTunes Search, MusicBrainz + Cover
-Art Archive), the card shows the plugin's built-in placeholder image instead of a
-real cover.
+the keyless providers (Deezer album search, iTunes album search, MusicBrainz
+release-group with release fallback + Cover Art Archive, Wikipedia pageimages,
+Discogs search → release), the card shows the plugin's built-in placeholder image
+instead of a real cover. An empty album tag is resolved from the track title
+(Deezer track search, then iTunes song search) before that chain runs.
 
 **My configuration changes do nothing.**
 AIMP must be **closed** while you edit `Profile/AIMP.ini`. Reopen AIMP after

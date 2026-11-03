@@ -43,13 +43,19 @@ UseAlbumArt=1
 LocalCover=1
 ; Keyless online artwork lookup. Default 1.
 UseAlbumArtOnline=1
-; Optional permanent GitHub cover host; empty token means the keyless hosts
-; (catbox, uguu) upload instead. Default: empty.
-CoverToken=
-CoverRepo=your-username/your-covers-repo
+; Permanent cover host: your own Google Drive. Empty Drive keys mean the
+; keyless hosts (catbox, uguu, litterbox) carry the upload instead.
+; Default: CoverHost=auto with both Drive keys empty.
+CoverHost=auto
+DriveClientId=1234567890-abc123.apps.googleusercontent.com
+DriveClientSecret=GOCSPX-xxxxxxxxxxxxxxxx
 ```
 
-`CoverToken` is **optional**: empty means the GitHub host is skipped and the keyless hosts carry the upload. `CoverHost` selects which host publishes covers (`auto` by default) — see [docs/GUIDE.md](docs/GUIDE.md), section 6.
+`CoverHost` selects which host publishes covers (`auto` by default; `drive` pins
+Drive, `keyless` keeps the anonymous hosts only) — see [docs/GUIDE.md](docs/GUIDE.md),
+section 3. Google Drive is the only permanent cover host; GitHub cover storage is
+unwired, and old GitHub cover keys left in an existing config are ignored without
+error.
 
 ## Troubleshooting
 
@@ -58,12 +64,14 @@ CoverRepo=your-username/your-covers-repo
 - **No cover art on some tracks.** Every layer failed for that track. The online lookup
   needs `UseAlbumArt=1` and `UseAlbumArtOnline=1`; set `DebugLog=discord.log` and read the
   `local-cover` lines to see which layer and host were tried.
-- **`CoverToken` rejected.** An expired or under-scoped token only loses the GitHub host — the keyless hosts still publish. Clear the token to silence it.
+- **Drive uploads never start.** `CoverHost` must be `auto` or `drive` and both Drive
+  keys must be set; read `DebugLog` — the startup line
+  `local-cover hosts policy=… drive=off drive-reason=…` names the cause.
 - **Updates feel lagged.** `ThrottleMs` (default `4000`) is the floor between updates, kept under Discord's five-per-20-seconds cap; the latest state follows when it expires.
 
 ## Full setup
 
-Building from source, every configuration key, your own cover repository and token, privacy,
+Building from source, every configuration key, your own Google Drive cover host, privacy,
 and a troubleshooting table: **[docs/GUIDE.md](docs/GUIDE.md)**.
 
 ## Status
