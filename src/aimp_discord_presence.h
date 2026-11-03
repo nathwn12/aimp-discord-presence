@@ -111,6 +111,10 @@ class AimpDiscordPresence :
   // Called on AIMP's message thread: applies a newly resolved URL, local or
   // online. Returns true when the card changed and an update should be sent.
   bool ApplyPendingArtwork();
+  // True while a cover for the current track can still resolve: a local upload
+  // queued or running for the current image, or an online lookup requested but
+  // not yet answered. Message thread only; takes the cover and presence locks.
+  bool HasPendingCoverSource();
 
   // Called on AIMP's message thread for a new track: extracts the local
   // (tags/sidecar) cover, appends its fingerprint to the DebugLog, and returns
@@ -227,9 +231,15 @@ class AimpDiscordPresence :
   std::string track_album_;
   // Identity discriminator for album-less tracks; AIMP message thread only.
   std::string track_file_;
-  // Track-change flash gate: holds a NEW track's card until its cover resolves
-  // or the 1.5 s deadline, then publishes once. AIMP message thread only.
+  // Track-change flash gate: holds a NEW track's card until its cover resolves,
+  // a definitive miss settles, or the adaptive deadline, then publishes once.
+  // AIMP message thread only.
   PresenceUpdateGate update_gate_;
+  // Whether an online lookup was requested for the current track. Cleared on
+  // stop/empty; the pending check compares artwork_key_ against the current
+  // album key, so an arrived callback (even an empty miss) settles it.
+  // AIMP message thread only.
+  bool online_requested_ = false;
   // Tag values of the track the card currently describes, for button template
   // expansion. AIMP message thread only.
   PresenceLayout::TrackFields track_fields_;

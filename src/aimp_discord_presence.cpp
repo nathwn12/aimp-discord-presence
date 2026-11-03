@@ -379,6 +379,7 @@ void AimpDiscordPresence::OnPlayerState(DWORD, int param1) {
   if (param1 == kPlayerStateStopped ||
       (param1 == kPlayerStatePaused && !settings.status.use_pause)) {
     track_key_.clear();
+    online_requested_ = false;
     update_gate_.Reset();
     // The worker is the only sender: record that presence must go away and
     // wake it. A queued update must not resurrect the presence after the clear,
@@ -435,20 +436,27 @@ void AimpDiscordPresence::OnPropertyValue(DWORD, int param1) {
     }
   }
 
-  // A held NEW track is released here on artwork or on the gate deadline,
-  // then published once.
+  // A held NEW track is released here on artwork, on a definitive miss, or on
+  // the gate deadline, then published once. A late cover after the deadline
+  // still teaches the adaptive budget.
   const bool artwork_applied = ApplyPendingArtwork();
+  const uint64_t now_ms = MonotonicMillisNow();
   if (update_gate_.HasPending()) {
-    const uint64_t now_ms = MonotonicMillisNow();
-    const PresenceUpdateGate::Decision release =
-        artwork_applied ? update_gate_.OnArtworkReady(now_ms)
-                        : update_gate_.OnTick(now_ms);
+    PresenceUpdateGate::Decision release;
+    if (artwork_applied) {
+      release = update_gate_.OnArtworkReady(now_ms);
+    } else if (!HasPendingCoverSource()) {
+      release = update_gate_.OnDefinitiveMiss(now_ms);
+    } else {
+      release = update_gate_.OnTick(now_ms);
+    }
     if (release == PresenceUpdateGate::Decision::Send) {
       SendActivity();
     }
     return;
   }
   if (artwork_applied) {
+    update_gate_.NoteLateCover(now_ms);
     SendActivity();
   }
 }
@@ -462,20 +470,26 @@ void AimpDiscordPresence::OnPlayerUpdatePosition() {
   // The artwork lookup is asynchronous (it can take seconds), so by the time
   // it resolves the seek-only property event may have already passed. This
   // event fires every second while a track plays, so the late result is
-  // applied and sent promptly. A held NEW track is released here on artwork
-  // or on the gate deadline, then published once.
+  // applied and sent promptly. A held NEW track is released here on artwork,
+  // on a definitive miss, or on the gate deadline, then published once.
   const bool artwork_applied = ApplyPendingArtwork();
+  const uint64_t now_ms = MonotonicMillisNow();
   if (update_gate_.HasPending()) {
-    const uint64_t now_ms = MonotonicMillisNow();
-    const PresenceUpdateGate::Decision release =
-        artwork_applied ? update_gate_.OnArtworkReady(now_ms)
-                        : update_gate_.OnTick(now_ms);
+    PresenceUpdateGate::Decision release;
+    if (artwork_applied) {
+      release = update_gate_.OnArtworkReady(now_ms);
+    } else if (!HasPendingCoverSource()) {
+      release = update_gate_.OnDefinitiveMiss(now_ms);
+    } else {
+      release = update_gate_.OnTick(now_ms);
+    }
     if (release == PresenceUpdateGate::Decision::Send) {
       SendActivity();
     }
     return;
   }
   if (artwork_applied) {
+    update_gate_.NoteLateCover(now_ms);
     SendActivity();
   }
 }
@@ -510,6 +524,7 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
 
   // Never publish the "AIMP" fallback card: empty file info means no track.
   if (info.file.empty()) {
+    online_requested_ = false;
     update_gate_.Reset();
     return;
   }
@@ -569,20 +584,25 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
       // cover that was found never suppresses this request: if its publish
       // fails, the online rung below is what may still supply an image.
       album_art_.Request(info.artist, info.album, info.file, info.title);
+      online_requested_ = true;
     } else {
       std::lock_guard<std::mutex> lock(presence_mutex_);
       artwork_key_.clear();
       artwork_url_.clear();
+      online_requested_ = false;
     }
   }
 
-  // Flash gate: a NEW track without a real cover is held until artwork
-  // resolves or the 1.5 s deadline, then published once. A cached cover sends
-  // immediately and a same-track update always sends.
+  // Adaptive flash gate: a NEW track without a real cover is held until
+  // artwork resolves, a definitive miss settles, or the learned deadline, then
+  // published once. Cached/ready, no-source, and same-track updates send
+  // immediately.
   const bool cover_ready =
       last_large_image_ != PresenceLayout::kTransparentLargeImageUrl;
+  const uint64_t now_ms = MonotonicMillisNow();
+  const bool has_source = cover_ready || HasPendingCoverSource();
   const PresenceUpdateGate::Decision gate_decision =
-      update_gate_.OnTrack(info.key, false, cover_ready, MonotonicMillisNow());
+      update_gate_.OnTrack(info.key, false, cover_ready, now_ms, has_source);
   if (gate_decision == PresenceUpdateGate::Decision::Hold) {
     return;
   }
@@ -776,6 +796,33 @@ bool AimpDiscordPresence::ApplyPendingArtwork() {
   LogCover("large-image applied artist=\"" + applied_artist + "\" album=\"" +
            applied_album + "\" source=" + applied_source + " url=" + applied_image);
   return true;
+}
+
+bool AimpDiscordPresence::HasPendingCoverSource() {
+  // Local upload queued or running for the current image. A finished result
+  // (ready flag) is settled, not pending: success would already read as
+  // cover-ready, failure as a definitive local miss.
+  bool local_pending = false;
+  if (!local_cover_sha_.empty()) {
+    std::lock_guard<std::mutex> lock(cover_mutex_);
+    if (cover_has_request_ && cover_request_hash_ == local_cover_sha_) {
+      local_pending = true;
+    } else if (cover_inflight_hash_ == local_cover_sha_) {
+      local_pending = true;
+    }
+  }
+
+  // Online lookup requested for the current track but unanswered. An arrived
+  // callback settles it even when the URL is empty (definitive miss).
+  bool online_pending = false;
+  if (online_requested_) {
+    const std::string album_key =
+        AlbumArt::BuildAlbumKey(track_artist_, track_album_, track_file_);
+    std::lock_guard<std::mutex> lock(presence_mutex_);
+    online_pending = (artwork_key_ != album_key);
+  }
+
+  return local_pending || online_pending;
 }
 
 std::string AimpDiscordPresence::ResolveLargeImageLocked(const std::string& album_key,

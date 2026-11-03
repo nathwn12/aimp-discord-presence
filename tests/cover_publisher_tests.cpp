@@ -2229,13 +2229,15 @@ void TestConsentErrorToken() {
 
 // --- Presence update gate: kill the track-change flash ----------------------
 //
-// A NEW track's card is held until its cover resolves or the 1.5 s monotonic
-// deadline, then published once. Empty file info is never published. Pure and
-// headless: monotonic time is injected, so the whole sequence runs offline.
+// A NEW track's card is held until its cover resolves, a definitive miss
+// settles, or the adaptive monotonic deadline, then published once. Empty
+// file info is never published. Pure and headless: monotonic time is injected,
+// so the whole sequence runs offline.
 void TestPresenceUpdateGate() {
   using Decision = PresenceUpdateGate::Decision;
 
-  Check(PresenceUpdateGate::kHoldMs == 1500, "gate: the hold deadline is 1.5 s");
+  Check(PresenceUpdateGate::kHoldMs == 1500, "gate: the hold ceiling is 1.5 s");
+  Check(PresenceUpdateGate::kDefaultHoldMs == 700, "gate: the default wait is 700 ms");
 
   // Empty file info is never published (the "AIMP" fallback card).
   PresenceUpdateGate gate;
@@ -2244,16 +2246,16 @@ void TestPresenceUpdateGate() {
         "gate: empty info -> Skip");
   Check(!gate.HasPending(), "gate: Skip holds nothing");
 
-  // A NEW track with no cover is held, not sent.
+  // A NEW track with no cover is held, not sent (default 700 ms budget).
   const std::string track_a = "Daft Punk\nDiscovery\nOne More Time";
   Check(gate.OnTrack(track_a, false, false, 1000) == Decision::Hold,
         "gate: new track no cover -> Hold");
   Check(gate.HasPending(), "gate: Hold has pending");
   Check(gate.pending_key() == track_a, "gate: Hold names the new track");
-  Check(gate.deadline_ms() == 1000 + PresenceUpdateGate::kHoldMs,
-        "gate: the deadline is monotonic now + 1.5 s");
+  Check(gate.deadline_ms() == 1000 + PresenceUpdateGate::kDefaultHoldMs,
+        "gate: the deadline is monotonic now + default budget");
   Check(!gate.artwork_ready(), "gate: a held track starts not artwork-ready");
-  Check(gate.OnTick(1000 + PresenceUpdateGate::kHoldMs - 1) == Decision::Hold,
+  Check(gate.OnTick(1000 + PresenceUpdateGate::kDefaultHoldMs - 1) == Decision::Hold,
         "gate: before the deadline still Hold");
 
   // The held card is released once when the cover resolves.
@@ -2266,9 +2268,9 @@ void TestPresenceUpdateGate() {
   const std::string track_b = "Daft Punk\nHomework\nAround the World";
   Check(gate_deadline.OnTrack(track_b, false, false, 2000) == Decision::Hold,
         "gate: second new track no cover -> Hold");
-  Check(gate_deadline.OnTick(2000 + PresenceUpdateGate::kHoldMs - 1) == Decision::Hold,
+  Check(gate_deadline.OnTick(2000 + PresenceUpdateGate::kDefaultHoldMs - 1) == Decision::Hold,
         "gate: no cover before deadline -> Hold");
-  Check(gate_deadline.OnTick(2000 + PresenceUpdateGate::kHoldMs) == Decision::Send,
+  Check(gate_deadline.OnTick(2000 + PresenceUpdateGate::kDefaultHoldMs) == Decision::Send,
         "gate: no cover at deadline -> Send");
   Check(!gate_deadline.HasPending(), "gate: deadline Send clears pending");
 
@@ -2293,10 +2295,114 @@ void TestPresenceUpdateGate() {
   Check(!gate_same.HasPending(), "gate: same-track artwork Send clears pending");
 
   // Stop/pause-clear resets the gate: the next track holds as new again.
+  // Samples survive the reset (learning crosses stops).
   gate_same.Reset();
   Check(!gate_same.HasPending(), "gate: Reset clears pending");
   Check(gate_same.OnTrack(track_a, false, false, 8000) == Decision::Hold,
         "gate: after Reset a new track holds again");
+}
+
+// --- Presence update gate: adaptive budget ----------------------------------
+//
+// Fake-clock proof for the learned wait: clamp(2 x median of last 8
+// track-start-to-cover samples, 250, 1500), default 700, rapid-skip cap 300.
+void TestPresenceUpdateGateAdaptive() {
+  using Decision = PresenceUpdateGate::Decision;
+
+  // No history -> 700 ms.
+  {
+    PresenceUpdateGate gate;
+    Check(gate.PredictedBudgetMs(0) == 700, "adaptive: no history -> 700");
+    Check(gate.OnTrack("A", false, false, 0) == Decision::Hold,
+          "adaptive: no history holds");
+    Check(gate.deadline_ms() == 700, "adaptive: no-history deadline is start + 700");
+  }
+
+  // Fast samples -> short (floor 250 ms). Spacing exceeds the rapid threshold
+  // so only history shapes the budget.
+  {
+    PresenceUpdateGate gate;
+    for (int i = 0; i < 4; ++i) {
+      const uint64_t start = static_cast<uint64_t>(i) * 2000;
+      const std::string key = "fast-" + std::to_string(i);
+      Check(gate.OnTrack(key, false, false, start) == Decision::Hold,
+            "adaptive: fast history holds");
+      Check(gate.OnArtworkReady(start + 100) == Decision::Send,
+            "adaptive: fast cover releases");
+    }
+    Check(gate.PredictedBudgetMs(8000) == PresenceUpdateGate::kMinHoldMs,
+          "adaptive: fast samples -> short floor");
+    Check(gate.OnTrack("fast-next", false, false, 8000) == Decision::Hold,
+          "adaptive: fast budget holds");
+    Check(gate.deadline_ms() == 8000 + PresenceUpdateGate::kMinHoldMs,
+          "adaptive: fast deadline is start + floor");
+  }
+
+  // Slow samples -> capped at 1500 ms. Late covers (after the deadline Send)
+  // still teach via NoteLateCover.
+  {
+    PresenceUpdateGate gate;
+    for (int i = 0; i < 8; ++i) {
+      const uint64_t start = static_cast<uint64_t>(i) * 2000;
+      const std::string key = "slow-" + std::to_string(i);
+      Check(gate.OnTrack(key, false, false, start) == Decision::Hold,
+            "adaptive: slow history holds");
+      // Let the deadline pass, then learn the late 800 ms cover.
+      const uint64_t deadline = gate.deadline_ms();
+      Check(gate.OnTick(deadline) == Decision::Send,
+            "adaptive: slow deadline sends placeholder");
+      gate.NoteLateCover(start + 800);
+    }
+    Check(gate.sample_count() == PresenceUpdateGate::kMaxSamples,
+          "adaptive: history keeps the last 8");
+    Check(gate.PredictedBudgetMs(16000) == PresenceUpdateGate::kHoldMs,
+          "adaptive: slow samples -> 1500 cap");
+    Check(gate.OnTrack("slow-next", false, false, 16000) == Decision::Hold,
+          "adaptive: capped budget holds");
+    Check(gate.deadline_ms() == 16000 + PresenceUpdateGate::kHoldMs,
+          "adaptive: capped deadline is start + 1500");
+  }
+
+  // Cached/ready cover -> immediate, learns nothing.
+  {
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("cached", false, true, 0) == Decision::Send,
+          "adaptive: cached -> immediate");
+    Check(!gate.HasPending(), "adaptive: cached holds nothing");
+    Check(gate.sample_count() == 0, "adaptive: cached records no sample");
+  }
+
+  // No cover source pending (art disabled / no local and online off) -> immediate.
+  {
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("no-source", false, false, 0, false) == Decision::Send,
+          "adaptive: no-source -> immediate");
+    Check(!gate.HasPending(), "adaptive: no-source holds nothing");
+  }
+
+  // Definitive miss while held -> immediate, learns nothing.
+  {
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("miss", false, false, 0) == Decision::Hold,
+          "adaptive: miss starts held");
+    Check(gate.OnDefinitiveMiss(100) == Decision::Send,
+          "adaptive: definitive miss -> immediate");
+    Check(!gate.HasPending(), "adaptive: miss clears pending");
+    Check(gate.sample_count() == 0, "adaptive: miss records no sample");
+  }
+
+  // Rapid skip (previous track under 1.5 s) -> cap 300 ms.
+  {
+    PresenceUpdateGate gate;
+    Check(gate.OnTrack("prev", false, false, 0) == Decision::Hold,
+          "adaptive: rapid prev holds");
+    Check(gate.OnTrack("next", false, false, 500) == Decision::Hold,
+          "adaptive: rapid next holds");
+    Check(gate.deadline_ms() == 500 + PresenceUpdateGate::kRapidSkipHoldMs,
+          "adaptive: rapid skip -> 300");
+    Check(gate.PredictedBudgetMs(500) == PresenceUpdateGate::kRapidSkipHoldMs,
+          "adaptive: rapid predicted budget is 300");
+  }
 }
 
 }  // namespace
@@ -2348,6 +2454,7 @@ int main(int argc, char** argv) {
   TestConsentWaitDecision();
   TestConsentErrorToken();
   TestPresenceUpdateGate();
+  TestPresenceUpdateGateAdaptive();
 
   std::printf("cover_publisher tests: %d checks, %d failures\n", g_checks, g_failures);
   std::printf("RESULT: %s\n", g_failures == 0 ? "PASS" : "FAIL");
