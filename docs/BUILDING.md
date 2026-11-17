@@ -13,15 +13,14 @@ key, and what to try when the presence does not appear.
 
 ## Installation (prebuilt)
 
-1. **Get the plugin.** Download a built release archive from the
+1. **Get the plugin.** Download `aimp_discordPresence.dll` from the
    [Releases page](https://github.com/nathwn12/aimp-discord-presence/releases)
    of this fork, or build it yourself (see [Build from source](#build-from-source)
    below).
 2. **Open the plugin installer in AIMP.** In AIMP, open **Settings** (the gear
    icon), or **right-click the title bar ▸ Settings**. Go to the **Plugins**
    section and click **Install**.
-3. **Select the archive or the `.dll`.** Point AIMP at the release archive, or at
-   `aimp_discordPresence.dll` if you built it yourself.
+3. **Select the `.dll`.** Point AIMP at the downloaded `aimp_discordPresence.dll`.
 4. **Let AIMP extract it.** AIMP installs the plugin into its own per-plugin
    folder, `AIMP\Plugins\aimp_discordPresence\`.
 5. **Enable it and restart.** Make sure the plugin is enabled in the Plugins list,
