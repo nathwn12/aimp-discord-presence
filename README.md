@@ -1,4 +1,4 @@
-> **Fork note (nathwn12):** this copy exists as a maintained line of Exle's aimp-discord-presence, shipping its own releases with cover-art and presence work ahead of upstream.
+> **Fork note (nathwn12):** this copy is a maintained line of Exle's aimp-discord-presence, with cover-art and presence work ahead of upstream. Prebuilt x64 DLL: [Releases](https://github.com/nathwn12/aimp-discord-presence/releases).
 >
 > What it changes: multi-layer cover-art chain (embedded/sidecar/online lookup), Spotify-parity presence card, configurable payload, and a portable build script.
 >
@@ -23,7 +23,7 @@ AIMP. Playback time is optional, the badges are configurable, and it reconnects 
 
 ## Install
 
-1. Get `aimp_discordPresence.dll` — from a release, or build it yourself.
+1. Download `aimp_discordPresence.dll` from the [Releases page](https://github.com/nathwn12/aimp-discord-presence/releases), or build it with [docs/BUILDING.md](docs/BUILDING.md).
 2. Put it in AIMP's plugin folder — `<AIMP install dir>\Plugins\aimp_discordPresence\` in a
    standard install (confirm on yours), or use **Settings ▸ Plugins ▸ Install** on the `.dll`.
 3. Confirm the plugin is **enabled** in **Settings ▸ Plugins**.

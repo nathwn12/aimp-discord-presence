@@ -82,7 +82,7 @@ plugin is not in AIMP's official catalogue, so it is always installed by hand.
 1. Close AIMP.
 2. Either copy the DLL into the `Plugins\aimp_discordPresence\` folder of your install (the
    path above, confirmed on your machine), or open AIMP and use **Settings ▸ Plugins ▸
-   Install**, then point AIMP at the `.dll` (or at a release archive).
+   Install**, then point AIMP at the downloaded `.dll`.
 3. In **Settings ▸ Plugins**, confirm **Discord Presence** is listed and **enabled**.
 4. Start AIMP and play a track.
 5. Check your Discord profile: the card should appear under *Listening to* AIMP.
