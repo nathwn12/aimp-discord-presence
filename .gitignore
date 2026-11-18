@@ -8,3 +8,5 @@
 *.ilk
 *.exp
 *.lib
+.seed/
+.opencode/skills/*-seed/
