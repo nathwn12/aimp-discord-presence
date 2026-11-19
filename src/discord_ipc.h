@@ -143,7 +143,6 @@ struct OutboundFrame {
   std::string payload;
 };
 
-// --- Pure helpers, unit tested separately from the pipe plumbing -----------
 
 // Escapes a UTF-8 string for a JSON string literal. Invalid UTF-8 bytes are
 // replaced with U+FFFD so the payload is always valid UTF-8.
@@ -175,7 +174,6 @@ bool ParseFrameHeader(const char* data, size_t size, uint32_t* opcode, uint32_t*
 // identifies: "stable", "ptb", "canary", or "unknown" (logged as-is).
 std::string FlavourFromEndpoint(const std::string& endpoint);
 
-// --- Protocol state machine ------------------------------------------------
 //
 // Owns everything that decides *what* the client should say, with no pipe I/O
 // at all, so the READY gate, the coalescing rule and the frame classification
@@ -266,7 +264,6 @@ class Session {
   std::string protocol_version_;
 };
 
-// --- Connection ------------------------------------------------------------
 
 class Client {
  public:

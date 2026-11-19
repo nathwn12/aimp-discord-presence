@@ -57,7 +57,6 @@ std::wstring CacheDirectoryFromArgs(int argc, char** argv) {
   return directory;
 }
 
-// --- URL shape --------------------------------------------------------------
 
 void TestUrlShape() {
   Check(LooksLikeUploadUrl("https://litter.catbox.moe/abc123.png"), "accept png url");
@@ -75,7 +74,6 @@ void TestUrlShape() {
   Check(!LooksLikeUploadUrl("https://litter.catbox.moe.evil.test/abc123.png"), "reject other host");
 }
 
-// --- Response classification ------------------------------------------------
 
 void TestClassifier() {
   const std::string url = "https://litter.catbox.moe/abc123.png";
@@ -162,7 +160,6 @@ void TestClassifier() {
   Check(!forbidden.ok && forbidden.reason == "http-403", "403 -> failure named by status");
 }
 
-// --- Ordered host fallback: litterbox first, then uguu ---------------------
 
 // Mirrors CoverPublisher::Publish's host loop as a pure decision over per-host
 // outcomes, so the ordered fallback is asserted without touching the network.
@@ -219,7 +216,6 @@ void TestHostFallback() {
         "host fallback: no local url, online url is used");
 }
 
-// --- Multipart arithmetic ---------------------------------------------------
 
 // The live transport measurement reported a 37-byte closing suffix and a
 // one-byte-larger part for JPEG. This builder keeps both invariants. Its prefix
@@ -268,7 +264,6 @@ void TestMultipartArithmetic() {
         "unknown mime keeps a truthful filename and content type");
 }
 
-// --- Upload host list: ordered, with each host's own shape ------------------
 
 void TestHostList() {
   // Without Drive credentials the chain is the keyless one, unchanged in order
@@ -322,7 +317,6 @@ void TestHostList() {
   Check(ConfiguredHostCount() == 3, "resetting the hosts restores the keyless chain");
 }
 
-// --- Multipart shapes differ correctly per host ----------------------------
 
 void TestMultipartShapes() {
   const std::vector<unsigned char> image(64, 0x2a);
@@ -365,7 +359,6 @@ void TestMultipartShapes() {
         "uguu body carries the image bytes");
 }
 
-// --- Centre-square crop -----------------------------------------------------
 
 void TestCentreSquareCrop() {
   // The re-encode crops to the shorter side, then caps at 512: 1000x800 becomes
@@ -389,7 +382,6 @@ void TestCentreSquareCrop() {
         "an already-square image over 256 KB re-encodes in place at 512");
 }
 
-// --- Legacy auth is ignored; no GitHub host can enter the chain ------------
 //
 // The GitHub host is gone: only Google Drive plus the keyless hosts remain.
 // CoverToken/CoverRepo are accepted without error and enable nothing, a legacy
@@ -460,7 +452,6 @@ void TestNoGitHubHost() {
   CoverPublisher::ConfigureHost("auto");
 }
 
-// --- catbox host ------------------------------------------------------------
 
 void TestCatboxHost() {
   Check(std::wstring(kBaseUploadHosts[0].host) == L"catbox.moe" &&
@@ -493,7 +484,6 @@ void TestCatboxHost() {
   Check(LooksLikeUploadUrl(catbox_url), "the catbox url is a recognised upload url");
 }
 
-// --- The Drive secret never leaks ---------------------------------------------
 
 void TestDriveSecretNeverLeaks() {
   g_log_lines.clear();
@@ -533,7 +523,6 @@ void TestDriveSecretNeverLeaks() {
   CoverPublisher::ConfigureHost("auto");
 }
 
-// --- The four-layer order is unchanged by the host chain --------------------
 
 void TestHostFailureDoesNotSkipLayers() {
   using PresenceLayout::CoverLayer;
@@ -566,7 +555,6 @@ void TestBoundary() {
   Check(alphabet_only, "boundary only uses boundary-safe characters");
 }
 
-// --- Track identity keys (album vs album-less) ------------------------------
 
 void TestAlbumIdentityKeys() {
   const std::string artist = "ZWE1HVNDXR Feat yatashigang";
@@ -623,7 +611,6 @@ void TestAlbumIdentityKeys() {
         "a real album's cover cannot be applied to an album-less file");
 }
 
-// --- Final cover chain: local -> online -> omitted ----------------------------
 
 void TestCoverFallbackChain() {
   const std::string artist = "ZWE1HVNDXR Feat yatashigang";
@@ -679,7 +666,6 @@ void TestCoverFallbackChain() {
         "chain: literal aimp is never the resolved image");
 }
 
-// --- Card large_image: never empty (transparent placeholder) -----------------
 
 void TestCardLargeImagePlaceholder() {
   using PresenceLayout::kTransparentLargeImageUrl;
@@ -746,7 +732,6 @@ void TestCardLargeImagePlaceholder() {
         "card: no input combination leaves the image field empty");
 }
 
-// --- The explicit four-layer chain, in order -------------------------------
 
 void TestCoverLayerOrder() {
   using PresenceLayout::CoverLayer;
@@ -815,7 +800,6 @@ void TestCoverLayerOrder() {
         "layer order: an empty artist still suppresses the request");
 }
 
-// --- Publish pending: the card is not blanked ------------------------------
 
 void TestPublishPendingNotBlank() {
   using PresenceLayout::CoverLayer;
@@ -846,7 +830,6 @@ void TestPublishPendingNotBlank() {
         "pending: a landed local url is a change the card applies");
 }
 
-// --- Online rung: decision outcomes (offline, pure functions) ---------------
 
 void TestOnlineRungDecision() {
   const std::string artist = "Daft Punk";
@@ -936,7 +919,6 @@ void TestOnlineRungDecision() {
         "online rung: another album's resolved url is never applied");
 }
 
-// --- Album-less online rung: the six album-empty guarantees -----------------
 //
 // (1) the request predicate fires; (2) album-empty is no longer a definitive
 // nothing-to-query case; (3) an artist-only hit is accepted; (4) a wrong-album
@@ -1014,7 +996,6 @@ void TestAlbumlessOnlineRung() {
         "albumless: a url resolved for another file's key is not adopted");
 }
 
-// --- SHA-256 cache keys -----------------------------------------------------
 
 void TestSha256() {
   const std::vector<unsigned char> abc = {'a', 'b', 'c'};
@@ -1035,7 +1016,6 @@ void TestSha256() {
   Check(Sha256Hex(image_a) != Sha256Hex(image_b), "cache key differs for different bytes");
 }
 
-// --- Compression decision ---------------------------------------------------
 
 void TestCompressionPlan() {
   // The re-encode is a 512 px centre-square: crop to the shorter side first,
@@ -1069,7 +1049,6 @@ void TestCompressionPlan() {
   Check(!unknown.reencode && unknown.width == 0 && unknown.height == 0, "unknown dimensions are left alone");
 }
 
-// --- Compression round trip (real WIC, still offline) -----------------------
 
 std::vector<unsigned char> EncodeTestPng(UINT width, UINT height, bool noise) {
   std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 4);
@@ -1248,7 +1227,6 @@ void TestCompressionPreparation() {
   Check(fallback.note.find("wic-failed=") != std::string::npos, "fallback note names the WIC failure");
 }
 
-// --- Sidecar art selection (pure) -------------------------------------------
 //
 // FindSidecarArt's walk touches the filesystem, but the choice it makes inside
 // a directory is pure: PickBestSidecarName sees only a list of names. These
@@ -1437,7 +1415,6 @@ void TestCache(const std::wstring& directory) {
   RemoveDirectoryW(directory.c_str());
 }
 
-// --- Ephemeral and legacy cache entries: upgrade vs revalidate --------------
 //
 // A cache hit on a keyless URL is never trusted blindly. With the Drive host
 // active the local bytes are re-published there and the cache is updated;
@@ -1514,7 +1491,6 @@ void TestCachedUrlPlan() {
   Check(!DriveUploadActive(), "plan: no credentials -> drive inactive");
 }
 
-// --- Google Drive host: PKCE, consent URL, sidecar, body, URL, policy --------
 //
 // All of this is pure or file-local: no test here performs a network call, and
 // none needs OAuth credentials.
@@ -1822,7 +1798,6 @@ void TestCoverHostSelection() {
   Check(ConfiguredHostCount() == 3, "policy: resetting every host restores the keyless chain");
 }
 
-// --- Drive permission classification ---------------------------------------
 
 void TestDrivePermissionClassification() {
   Check(ClassifyDrivePermission(200, "") == DrivePermissionVerdict::kGranted,
@@ -1864,7 +1839,6 @@ void TestDrivePermissionClassification() {
         "permission: a 5xx is rejected");
 }
 
-// --- Host policy on the cache-upgrade path ---------------------------------
 
 void TestCacheUpgradePolicy() {
   // keyless must never reach Drive, whatever the credentials.
@@ -1918,7 +1892,6 @@ void TestCacheUpgradePolicy() {
         "upgrade policy: with no credentials the live chain offers no upgrade host");
 }
 
-// --- Consent deadline arithmetic -------------------------------------------
 
 void TestConsentDeadline() {
   // Remaining time never goes negative.
@@ -1952,7 +1925,6 @@ void TestConsentDeadline() {
         "deadline: a fresh deadline is exactly the window away");
 }
 
-// --- Startup host-configuration line ---------------------------------------
 //
 // The live defect: with CoverHost=drive and valid credentials the log carried no
 // drive line at all, because the cache-hit path never reached the chain (the old
@@ -2044,7 +2016,6 @@ void TestHostConfigLine() {
   CoverPublisher::ConfigureHost("auto");
 }
 
-// --- Cache hits name their host --------------------------------------------
 
 void TestCacheHitHost(const std::wstring& directory) {
   const std::string legacy_name(64, 'a');
@@ -2087,7 +2058,6 @@ void TestCacheHitHost(const std::wstring& directory) {
   RemoveDirectoryW(directory.c_str());
 }
 
-// --- A legacy cache entry is replaced, never left in place ------------------
 //
 // When a cached legacy GitHub URL is re-published (Drive active) the cache
 // entry must be replaced with the new URL: left in place, every play would
@@ -2142,7 +2112,6 @@ void TestLegacyCacheEntryReplaced(const std::wstring& directory) {
   RemoveDirectoryW(directory.c_str());
 }
 
-// --- Consent wait decision --------------------------------------------------
 
 void TestConsentWaitDecision() {
   const long long deadline = 120000;  // an absolute budget in milliseconds
@@ -2182,7 +2151,6 @@ void TestConsentWaitDecision() {
         "consent wait: a select error is not a connection and keeps waiting");
 }
 
-// --- Consent error token ----------------------------------------------------
 
 bool IsClosedSetConsentToken(const std::string& token) {
   return token == "access_denied" || token == "invalid_scope" || token == "invalid_request" ||
@@ -2227,7 +2195,6 @@ void TestConsentErrorToken() {
   }
 }
 
-// --- Presence update gate: kill the track-change flash ----------------------
 //
 // A NEW track's card is held until its cover resolves, a definitive miss
 // settles, or the adaptive monotonic deadline, then published once. Empty
@@ -2309,7 +2276,6 @@ void TestPresenceUpdateGate() {
         "gate: after Reset a new track holds again");
 }
 
-// --- Presence update gate: adaptive budget ----------------------------------
 //
 // Fake-clock proof for the learned wait: clamp(2 x median of last 8
 // track-start-to-cover samples, 1000, 3000), default 1500, rapid-skip target
@@ -2422,7 +2388,6 @@ void TestPresenceUpdateGateAdaptive() {
   }
 }
 
-// --- Presence update gate: 1 s tick scenarios --------------------------------
 //
 // The verdict's five cases, each driven on 1 s ticks: the budget is met on the
 // first tick at or after the target.
@@ -2487,7 +2452,6 @@ void TestPresenceUpdateGateTicks() {
   }
 }
 
-// --- Presence update gate: tick race ----------------------------------------
 //
 // A cover that completes between the artwork poll and the pending-source check
 // must hold, never send the placeholder as a miss. Pure headless proof for the

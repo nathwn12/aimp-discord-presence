@@ -85,7 +85,6 @@ enum class Provider {
   kDiscogs,
 };
 
-// --- Pure helpers, unit tested separately ---------------------------------
 
 // Builds the identity key used both as the resolver cache key and to match a
 // resolved artwork URL with the track currently playing. An album tag is the
@@ -205,7 +204,6 @@ bool DeezerTrackResultMatches(const std::string& body, const std::string& artist
 bool ItunesSongResultMatches(const std::string& body, const std::string& artist,
                              const std::string& track);
 
-// --- Background resolver ---------------------------------------------------
 
 class Resolver {
  public:

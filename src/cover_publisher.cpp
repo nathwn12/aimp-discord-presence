@@ -65,7 +65,6 @@ using CoverPublisher::Result;
 // that definition, so the declaration comes first.
 void EmitLog(const std::string& line);
 
-// --- Transport constants ----------------------------------------------------
 
 // Per-HTTP-operation budget. Each upload attempt and each health check gets
 // this much time; a transport failure is retried once after a short pause, so
@@ -85,7 +84,6 @@ constexpr long long kNegativeCacheTtlSeconds = 60;
 // matching the live measurement of the host's request framing.
 constexpr size_t kBoundaryLength = 29;
 
-// --- Google Drive host constants --------------------------------------------
 //
 // The consent wait is the one long wait in the module. It is interactive, so it
 // cannot share the 6 s transport budget, but it runs on the cover worker only:
@@ -464,7 +462,6 @@ bool IsEphemeralCachedUrl(const std::string& url) {
          LooksLikeHostUrl(url, UploadHost{L"", L"", L"", UploadShape::kLitterbox});
 }
 
-// --- Legacy GitHub cache classifier -----------------------------------------
 //
 // The GitHub host is gone: only Google Drive and the keyless hosts remain. A
 // cached legacy-GitHub URL from an older version is legacy: it is
@@ -527,7 +524,6 @@ const char* FilenameForMime(const std::string& mime) {
   return "cover.bin";
 }
 
-// --- Multipart body ---------------------------------------------------------
 
 std::string MultipartPrefix(const std::string& boundary, const std::string& mime,
                             UploadShape shape) {
@@ -578,7 +574,6 @@ std::string BuildMultipartBody(const std::string& boundary, const std::string& m
   return body;
 }
 
-// --- Google Drive multipart/related body ------------------------------------
 //
 // Drive's upload endpoint takes a multipart/related body with exactly two
 // parts: a JSON metadata part (name + parent folder), then the raw bytes under
@@ -626,7 +621,6 @@ std::string MakeBoundary() {
   return boundary;
 }
 
-// --- Response classification ------------------------------------------------
 
 // `shape` names the host that answered, so the 200 body must be that host's own
 // bare URL. The default is litterbox, which keeps the strict two-argument form
@@ -652,7 +646,6 @@ Result ClassifyUploadResponse(DWORD status, const std::string& body,
   return Failure("http-" + std::to_string(status));
 }
 
-// --- JSON string field reader -------------------------------------------------
 //
 // A small, dependency-free JSON string field reader in the same style as
 // album_art.cpp's extractor: find the quoted key, then read the quoted string
@@ -691,7 +684,6 @@ std::string ExtractJsonStringField(const std::string& json, const std::string& k
   return value;
 }
 
-// --- Google Drive API -------------------------------------------------------
 //
 // The Drive host is the owner's own storage. The file is named by the SHA-256
 // of the uploaded bytes, matching the cache key, and lives in one bootstrap folder made publicly readable once; children
@@ -845,7 +837,6 @@ DrivePermissionVerdict ClassifyDrivePermission(DWORD status, const std::string& 
   return DrivePermissionVerdict::kRejected;
 }
 
-// --- SHA-256 (cache keys) ---------------------------------------------------
 
 constexpr uint32_t kSha256RoundConstants[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
@@ -983,7 +974,6 @@ std::string Sha256Hex(const std::vector<unsigned char>& bytes) {
   return hex;
 }
 
-// --- PKCE, OAuth state, and base64url --------------------------------------
 //
 // RFC 7636 S256: a 43-character base64url verifier (32 random bytes) and its
 // challenge, the base64url SHA-256 of the verifier. Neither value is secret in
@@ -1068,7 +1058,6 @@ std::string BuildDriveAuthUrl(const std::string& client_id, const std::string& r
   return url;
 }
 
-// --- Image preparation (WIC) ------------------------------------------------
 
 // Compression is a best-effort transfer-size reduction, never a gate: any WIC
 // failure returns the original bytes untouched. The sizing decision is split
@@ -1293,7 +1282,6 @@ PreparedImage PrepareImageForUpload(const std::vector<unsigned char>& source, co
 // collide, and would hide a changed encoder behind a stale key.
 std::string UploadCacheKey(const PreparedImage& image) { return Sha256Hex(image.bytes); }
 
-// --- Cache ------------------------------------------------------------------
 
 struct CacheEntry {
   bool ok = false;
@@ -1544,7 +1532,6 @@ void CacheStore(const std::string& key, const Result& result, long long now) {
   SaveCacheLocked();
 }
 
-// --- Drive sidecar (refresh token + bootstrap folder) -----------------------
 //
 // The sidecar is a tiny key=value text file. It holds the refresh token and the
 // bootstrap folder id and nothing else: no access token (in memory only), no
@@ -1642,7 +1629,6 @@ bool SaveDriveState(const std::string& path, const DriveState& state) {
   return WriteWholeFile(path, FormatDriveState(state));
 }
 
-// --- WinHTTP plumbing -------------------------------------------------------
 
 class WinHttpHandle {
  public:
@@ -1878,7 +1864,6 @@ UploadAttempt UploadMultipartBody(const UploadHost& upload_host, const std::stri
   return AttemptResult(ClassifyUploadResponse(status, response, upload_host.shape));
 }
 
-// --- Google Drive transport -------------------------------------------------
 //
 // Every request here is built and sent on the cover worker thread. Nothing in
 // this section runs on AIMP's message thread, and every wait is bounded: the
@@ -2051,7 +2036,6 @@ std::string g_drive_folder_id;
 std::atomic<bool> g_drive_consent_cancel{false};
 std::atomic<long long> g_drive_consent_failed_at{0};
 
-// --- Loopback consent listener ----------------------------------------------
 
 bool EnsureWinsock(std::string* reason) {
   static std::once_flag once;
@@ -2135,7 +2119,6 @@ struct ConsentCallback {
   std::string error;  // "cancelled", "timeout", "unexpected-request", or Google's error code
 };
 
-// --- Consent deadline arithmetic -------------------------------------------
 //
 // The whole consent operation (browser hand-off plus loopback wait) shares one
 // absolute deadline, and every blocking call is clamped to what remains. The
@@ -2973,7 +2956,6 @@ Result PublishException(const std::vector<unsigned char>& image_bytes, const cha
 
 }  // namespace
 
-// --- Public interface -------------------------------------------------------
 
 namespace CoverPublisher {
 

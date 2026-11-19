@@ -39,7 +39,6 @@ bool Contains(const std::string& haystack, const std::string& needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
-// --- URL builders -----------------------------------------------------------
 
 void TestUrlBuilders() {
   // Tier 1 keepers.
@@ -142,7 +141,6 @@ void TestUrlBuilders() {
   Check(!Contains(all_urls, "archive.org"), "no builder touches Internet Archive");
 }
 
-// --- Extractors (fixtures from keyless-notes.md, 2026-11-04) ---------------
 
 void TestExtractors() {
   // Deezer album cover.
@@ -241,7 +239,6 @@ void TestExtractors() {
         "mb release answer is not an image url");
 }
 
-// --- Guards -----------------------------------------------------------------
 
 void TestGuards() {
   // A matching Deezer hit passes; a wrong-album hit is rejected.
@@ -323,7 +320,6 @@ void TestGuards() {
         "itunes song guard rejects a different title");
 }
 
-// --- Preference order --------------------------------------------------------
 
 void TestPreferenceOrder() {
   // The two-tier chain is Deezer, iTunes, MusicBrainz, Wikipedia, Discogs:
@@ -347,7 +343,6 @@ void TestPreferenceOrder() {
   Check(kOrder[4] == AlbumArt::Provider::kDiscogs, "order: discogs is last");
 }
 
-// --- Live -------------------------------------------------------------------
 
 bool IsNewHostUrl(const std::string& url) {
   if (url.find("upload.wikimedia.org") != std::string::npos ||

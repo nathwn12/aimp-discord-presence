@@ -27,7 +27,6 @@ void Check(bool condition, const std::string& label) {
   }
 }
 
-// --- Tiny JSON probes -------------------------------------------------------
 //
 // The builder emits flat objects and strings only, so a real parser would be
 // more machinery than the assertions need.
@@ -75,7 +74,6 @@ size_t CountOccurrences(const std::string& text, const std::string& needle) {
   return count;
 }
 
-// --- UTF-8 probes -----------------------------------------------------------
 
 size_t Utf8SequenceLength(const std::string& text, size_t index) {
   const unsigned char lead = static_cast<unsigned char>(text[index]);
@@ -142,7 +140,6 @@ DiscordIpc::Activity DefaultButtonsActivity() {
   return activity;
 }
 
-// --- (a) name ---------------------------------------------------------------
 
 void TestNamePresentWhenSet() {
   DiscordIpc::Activity activity;
@@ -170,7 +167,6 @@ void TestNameTruncatedTo128() {
   Check(CodepointCount(name) == 128, "name holds 128 codepoints");
 }
 
-// --- (b) two buttons --------------------------------------------------------
 
 void TestTwoButtonsEmitted() {
   const std::string json =
@@ -182,7 +178,6 @@ void TestTwoButtonsEmitted() {
   Check(ButtonsJson(json) == expected, "two buttons carry label and url in order");
 }
 
-// --- (c) empty url drops the slot -------------------------------------------
 
 void TestButtonWithEmptyUrlOmitted() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
@@ -228,7 +223,6 @@ void TestSingleButtonArrayShape() {
         "the single-object buttons array has no trailing comma");
 }
 
-// --- (d) non-https url drops the slot ---------------------------------------
 
 void TestNonHttpsUrlDropped() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
@@ -244,7 +238,6 @@ void TestNonHttpsUrlDropped() {
         "the https button after it is still emitted");
 }
 
-// --- (e) label truncation ---------------------------------------------------
 
 void TestLabelTruncatedTo32() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
@@ -266,7 +259,6 @@ void TestEmptyLabelFallsBackToListen() {
         "an empty label becomes Listen");
 }
 
-// --- (f) url truncation -----------------------------------------------------
 
 void TestUrlTruncatedTo512() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
@@ -279,7 +271,6 @@ void TestUrlTruncatedTo512() {
         "truncated url keeps its https prefix");
 }
 
-// --- (g) UTF-8 truncation ---------------------------------------------------
 
 void TestUtf8TruncationDoesNotSplitCharacter() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
@@ -299,7 +290,6 @@ void TestUtf8TruncationDoesNotSplitCharacter() {
         "label ends on a whole CJK codepoint, never a split sequence");
 }
 
-// --- (h) pre-existing fields ------------------------------------------------
 
 void TestExistingFieldsUnchanged() {
   DiscordIpc::Activity activity;
@@ -350,7 +340,6 @@ void TestWireFixtureShape() {
         "fixture carries both buttons");
 }
 
-// --- (i) template expansion -------------------------------------------------
 
 PresenceLayout::TrackFields SampleFields() {
   PresenceLayout::TrackFields fields;
@@ -435,7 +424,6 @@ void TestTemplateUrlEncodingKeepsLiteralPercent() {
         "RFC 3986 unreserved bytes stay raw");
 }
 
-// --- (j) large_text ---------------------------------------------------------
 
 void TestLargeTextRoundTrips() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
@@ -464,7 +452,6 @@ void TestLargeTextOneCharacterOmitted() {
         "a one-character large_text is omitted, not padded");
 }
 
-// --- (k) small_text per state ----------------------------------------------
 
 PresenceLayout::SmallBadgeSettings BadgeSettings() {
   PresenceLayout::SmallBadgeSettings settings;
@@ -525,7 +512,6 @@ void TestSmallTextAbsentWhenRadioTextEmpty() {
   Check(badge.text.empty(), "an empty RadioText leaves no small_text");
 }
 
-// --- (l) artist normalisation ----------------------------------------------
 
 void TestArtistSeparatorNormalised() {
   Check(PresenceLayout::NormalizeArtistSeparators("Billie Eilish,Khalid") ==
@@ -545,7 +531,6 @@ void TestArtistSingleValueUntouched() {
         "an already-correct pair is untouched");
 }
 
-// --- (m) rate limit ---------------------------------------------------------
 
 void TestShouldSendNow() {
   Check(PresenceRateLimit::ShouldSendNow(12345, 0, 4000),
@@ -582,7 +567,6 @@ void TestNormalizeThrottleMs() {
   }
 }
 
-// --- (n) single-writer throttle plan ---------------------------------------
 //
 // The throttle worker is the only thread that calls into the Discord client.
 // These checks model the revision/interval decisions it makes, including the
@@ -804,7 +788,6 @@ void TestThrottleGateAfterAction() {
         "a clear does not consume interval budget");
 }
 
-// --- (o) default template layout -------------------------------------------
 
 void TestDefaultTemplatesProduceTheAlbumTooltip() {
   const PresenceLayout::TrackFields fields = SampleFields();

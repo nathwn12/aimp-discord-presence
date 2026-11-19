@@ -23,9 +23,7 @@ namespace Aimp {
 
 namespace {
 
-// ---------------------------------------------------------------------------
 // Core pointer and message hook registry
-// ---------------------------------------------------------------------------
 
 std::atomic<IAIMPCore*> g_core{nullptr};
 
@@ -44,9 +42,7 @@ std::vector<HookEntry>& HookList() {
   return hooks;
 }
 
-// ---------------------------------------------------------------------------
 // Small helpers
-// ---------------------------------------------------------------------------
 
 class ScopedString {
  public:
@@ -243,9 +239,7 @@ void ConfigSet(IAIMPServiceConfig* service, const std::wstring& key, bool value)
   ConfigSet(service, key, value ? 1 : 0);
 }
 
-// ---------------------------------------------------------------------------
 // Message hooks
-// ---------------------------------------------------------------------------
 
 }  // namespace Detail
 

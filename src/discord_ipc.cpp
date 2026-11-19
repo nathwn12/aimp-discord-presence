@@ -149,7 +149,6 @@ bool IsPresentButtonUrl(const std::string& url) {
   return url.compare(0, sizeof(kButtonUrlScheme) - 1, kButtonUrlScheme) == 0;
 }
 
-// --- Minimal JSON reader ---------------------------------------------------
 //
 // The transport only ever reads a handful of fields out of a frame, so a full
 // JSON library would be an unnecessary dependency. These helpers walk the
@@ -618,7 +617,6 @@ std::string FlavourFromEndpoint(const std::string& endpoint) {
   return "unknown";
 }
 
-// --- Session ---------------------------------------------------------------
 
 Session::Session(std::string application_id, int64_t pid)
     : application_id_(std::move(application_id)), pid_(pid) {}
@@ -804,7 +802,6 @@ Session::Inbound Session::OnInbound(uint32_t opcode, const std::string& payload)
   return result;
 }
 
-// --- Client ----------------------------------------------------------------
 
 Client::Client(const std::string& application_id)
     : application_id_(application_id),
