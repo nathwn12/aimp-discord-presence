@@ -1,20 +1,3 @@
-// Offline + live tests for the keyless online chain (src/album_art.cpp).
-//
-// Offline (default): pure helpers only, no network. URL builders, JSON
-// extractors (fixtures from the 2026-11-04 keyless-notes probe), identity
-// guards, track-level resolution guards, and the two-tier preference order.
-// Build (from the repository root):
-//   cl /nologo /std:c++17 /W4 /WX /EHsc tests\album_art_tests.cpp
-//      src\album_art.cpp /link winhttp.lib
-// Run:
-//   album_art_tests.exe
-//
-// Live (--live): real HTTPS GETs through Resolver::Lookup / LookupFromProvider.
-// Prints one resolved image URL per album and exits 0 only when at least 2 of
-// 3 albums resolve and at least one URL comes from a newly added host
-// (Wikipedia, Discogs, or the MusicBrainz release-search /release/ cover).
-// Run:
-//   album_art_tests.exe --live
 
 #include "../src/album_art.h"
 
@@ -41,7 +24,6 @@ bool Contains(const std::string& haystack, const std::string& needle) {
 
 
 void TestUrlBuilders() {
-  // Tier 1 keepers.
   const std::string deezer =
       AlbumArt::BuildDeezerSearchUrl("Pink Floyd", "The Dark Side of the Moon");
   Check(Contains(deezer, "api.deezer.com/search/album"), "deezer art url targets the album endpoint");
@@ -76,7 +58,6 @@ void TestUrlBuilders() {
   Check(AlbumArt::BuildItunesSongSearchUrl("Massive Attack", "").empty(),
         "itunes song url needs a track title");
 
-  // MusicBrainz pair.
   const std::string mb_group =
       AlbumArt::BuildMusicBrainzReleaseGroupUrl("Daft Punk", "Random Access Memories");
   Check(Contains(mb_group, "musicbrainz.org/ws/2/release-group/"),
@@ -106,7 +87,6 @@ void TestUrlBuilders() {
   Check(AlbumArt::BuildCoverArtArchiveReleaseUrl("not-a-uuid").empty(),
         "caa release url rejects a malformed mbid");
 
-  // Wikipedia fallback.
   const std::string wiki =
       AlbumArt::BuildWikipediaSearchUrl("Pink Floyd", "The Dark Side of the Moon");
   Check(Contains(wiki, "en.wikipedia.org/w/api.php"), "wiki url targets the api");
@@ -116,7 +96,6 @@ void TestUrlBuilders() {
   Check(Contains(wiki, "pilicense=any"), "wiki url accepts any license");
   Check(AlbumArt::BuildWikipediaSearchUrl("", "").empty(), "wiki url needs a query");
 
-  // Discogs enrichment.
   const std::string discogs =
       AlbumArt::BuildDiscogsSearchUrl("Pink Floyd", "The Dark Side of the Moon");
   Check(Contains(discogs, "api.discogs.com/database/search"),
@@ -131,7 +110,6 @@ void TestUrlBuilders() {
   Check(AlbumArt::BuildDiscogsReleaseUrl("abc").empty(),
         "discogs release url rejects a non-numeric id");
 
-  // Forbidden hosts never appear in any builder (brief reject list).
   const std::string all_urls = deezer + deezer_track + itunes + itunes_song + mb_group +
                                mb_release + wiki + discogs;
   Check(!Contains(all_urls, "theaudiodb"), "no builder touches TheAudioDB");
@@ -143,7 +121,6 @@ void TestUrlBuilders() {
 
 
 void TestExtractors() {
-  // Deezer album cover.
   const std::string deezer_body =
       "{\"data\":[{\"title\":\"Random Access Memories\",\"artist\":{\"name\":\"Daft Punk\"},"
       "\"cover_xl\":\"https://cdn-images.dzcdn.net/images/cover/abc123/1000x1000-000000-80-0-0.jpg\"}],"
@@ -156,7 +133,6 @@ void TestExtractors() {
             .empty(),
         "deezer extractor misses on an empty answer");
 
-  // iTunes upscale.
   const std::string itunes_body =
       "{\"resultCount\":1,\"results\":[{\"artistName\":\"Massive Attack\","
       "\"trackName\":\"Teardrop\",\"collectionName\":\"Mezzanine\","
@@ -165,7 +141,6 @@ void TestExtractors() {
             "https://is1-ssl.mzstatic.com/image/thumb/Music/xyz/600x600bb.jpg",
         "itunes extractor upscales to 600x600");
 
-  // MusicBrainz ids.
   const std::string mb_group_body =
       "{\"count\":1,\"release-groups\":[{\"id\":\"8ecfafd1-89a8-423a-968f-3fff47f0b0f9\","
       "\"title\":\"Random Access Memories\","
@@ -183,18 +158,15 @@ void TestExtractors() {
             "8ecfafd1-89a8-423a-968f-3fff47f0b0f9",
         "mb release extractor returns the release mbid");
 
-  // Deezer track album title (resolution).
   const std::string deezer_track_body =
       "{\"data\":[{\"title\":\"Teardrop\",\"artist\":{\"name\":\"Massive Attack\"},"
       "\"album\":{\"title\":\"Mezzanine\"}}]}";
   Check(AlbumArt::ExtractDeezerTrackAlbumTitle(deezer_track_body) == "Mezzanine",
         "deezer track extractor returns the album title");
 
-  // iTunes collection name (resolution).
   Check(AlbumArt::ExtractItunesAlbumTitle(itunes_body) == "Mezzanine",
         "itunes song extractor returns the collection name");
 
-  // Wikipedia page + thumbnail.
   const std::string wiki_body =
       "{\"query\":{\"pages\":{\"1791673\":{\"pageid\":1791673,\"title\":\"Mezzanine (album)\","
       "\"thumbnail\":{\"source\":\"https://upload.wikimedia.org/wikipedia/en/e/e9/Massive_Attack_-_Mezzanine.png\","
@@ -212,7 +184,6 @@ void TestExtractors() {
             .empty(),
         "wiki thumbnail misses when the page has no thumbnail (RAM case)");
 
-  // Discogs search id + release image.
   const std::string discogs_search =
       "{\"pagination\":{\"items\":2490},"
       "\"results\":[{\"id\":9287809,"
@@ -230,7 +201,6 @@ void TestExtractors() {
             "https://i.discogs.com/abc123-600px.jpeg",
         "discogs artwork extractor returns the release image");
 
-  // MusicBrainz answers are never image URLs.
   Check(AlbumArt::ExtractArtworkUrl(mb_group_body, AlbumArt::Provider::kMusicBrainz).empty(),
         "mb group answer is not an image url");
   Check(AlbumArt::ExtractArtworkUrl(mb_release_body,
@@ -241,7 +211,6 @@ void TestExtractors() {
 
 
 void TestGuards() {
-  // A matching Deezer hit passes; a wrong-album hit is rejected.
   const std::string deezer_ok =
       "{\"data\":[{\"title\":\"Discovery\",\"artist\":{\"name\":\"Daft Punk\"},"
       "\"cover_xl\":\"https://cdn-images.dzcdn.net/images/cover/a/600x600-000000-80-0-0.jpg\"}]}";
@@ -255,11 +224,9 @@ void TestGuards() {
                                       "Daft Punk", "Discovery"),
         "deezer guard rejects a different album");
 
-  // Artist-only: an empty requested album accepts any album by that artist.
   Check(AlbumArt::SearchResultMatches(deezer_ok, AlbumArt::Provider::kDeezer, "Daft Punk", ""),
         "deezer guard accepts an artist-only hit");
 
-  // Wikipedia exact-title guard.
   const std::string wiki_ok =
       "{\"query\":{\"pages\":{\"1791673\":{\"title\":\"Mezzanine (album)\","
       "\"thumbnail\":{\"source\":\"https://upload.wikimedia.org/wikipedia/en/e/e9/x.png\"}}}}}";
@@ -269,7 +236,6 @@ void TestGuards() {
   const std::string wiki_wrong =
       "{\"query\":{\"pages\":{\"9\":{\"title\":\"Mezzanine (Massive Attack album)\","
       "\"thumbnail\":{\"source\":\"https://upload.wikimedia.org/wikipedia/en/9/9f/x.png\"}}}}}";
-  // "Mezzanine (album)" must not match an unrelated page.
   Check(!AlbumArt::SearchResultMatches(
             "{\"query\":{\"pages\":{\"1\":{\"title\":\"Bohemian Rhapsody\","
             "\"thumbnail\":{\"source\":\"https://upload.wikimedia.org/wikipedia/en/9/9f/x.png\"}}}}}",
@@ -279,7 +245,6 @@ void TestGuards() {
                                       "Pink Floyd", "The Dark Side of the Moon"),
         "wiki guard rejects a page for another album");
 
-  // Discogs guard: "Artist - Album" must agree with artist + album.
   const std::string discogs_ok =
       "{\"results\":[{\"id\":9287809,"
       "\"title\":\"Pink Floyd - The Dark Side Of The Moon\"}]}";
@@ -291,7 +256,6 @@ void TestGuards() {
             AlbumArt::Provider::kDiscogs, "Pink Floyd", "The Dark Side Of The Moon"),
         "discogs guard rejects another artist's album");
 
-  // MusicBrainz release guard mirrors the group guard.
   const std::string mb_release_ok =
       "{\"releases\":[{\"id\":\"8ecfafd1-89a8-423a-968f-3fff47f0b0f9\","
       "\"title\":\"Random Access Memories\",\"artist-credit\":[{\"name\":\"Daft Punk\"}]}]}";
@@ -300,7 +264,6 @@ void TestGuards() {
                                      "Random Access Memories"),
         "mb release guard accepts the requested release");
 
-  // Track-level resolution guards: artist + title, with a real album to adopt.
   const std::string track_ok =
       "{\"data\":[{\"title\":\"Teardrop\",\"artist\":{\"name\":\"Massive Attack\"},"
       "\"album\":{\"title\":\"Mezzanine\"}}]}";
@@ -322,9 +285,6 @@ void TestGuards() {
 
 
 void TestPreferenceOrder() {
-  // The two-tier chain is Deezer, iTunes, MusicBrainz, Wikipedia, Discogs:
-  // the enum pins the order so Tier 1 (Deezer + iTunes) and Tier 2 (the rest)
-  // cannot drift apart from the resolver.
   const AlbumArt::Provider kOrder[] = {
       AlbumArt::Provider::kDeezer,
       AlbumArt::Provider::kItunes,
@@ -354,7 +314,6 @@ bool IsNewHostUrl(const std::string& url) {
       url.find("discogs.com") != std::string::npos) {
     return true;
   }
-  // The release-search CAA path is new; the group path predates this change.
   if (url.find("coverartarchive.org/release/") != std::string::npos &&
       url.find("/release-group/") == std::string::npos) {
     return true;
@@ -388,8 +347,6 @@ int RunLive() {
         ++new_host;
       }
     }
-    // Per-provider proof: Tier 2 hosts are only proven when called directly,
-    // because Tier 1 usually wins the combined lookup above.
     bool answered = false;
     const std::string wiki =
         resolver.LookupFromProvider(AlbumArt::Provider::kWikipedia, entry.artist,
@@ -417,7 +374,6 @@ int RunLive() {
     }
   }
 
-  // Empty-album resolution: Teardrop must resolve to Mezzanine, then to art.
   const std::string resolved_album =
       resolver.ResolveAlbumTitle("Massive Attack", "Teardrop");
   std::printf("live resolved-album artist=\"Massive Attack\" track=\"Teardrop\" album=\"%s\"\n",

@@ -32,40 +32,6 @@
 #include <thread>
 #include <unordered_map>
 
-// Resolves album art URLs from keyless public APIs on a background worker so
-// AIMP's message thread is never blocked on the network. The providers are
-// tried in preference order:
-//
-//   1. Deezer album search (`cover_xl`).
-//   2. iTunes Search API (`artworkUrl100`, upscaled to 600x600).
-//   3. MusicBrainz release-group search for an MBID, then the Cover Art Archive
-//      front cover for that MBID; on a miss the WS/2 release search is tried
-//      with the Cover Art Archive `/release/<mbid>/front-500` cover.
-//   4. Wikipedia pageimages (`generator=search`, `pithumbsize=600`,
-//      `pilicense=any`) with an exact-title guard.
-//   5. Discogs database search, then `GET /releases/<id>` for `images[0].uri`.
-//
-// The lookup runs in two tiers: Tier 1 (Deezer + iTunes) runs in parallel and
-// wins whenever either hits; only when both miss does Tier 2 (MusicBrainz +
-// Wikipedia + Discogs) run in parallel. Tiering keeps the common case to one
-// round trip and keeps the enrichment hosts (Discogs 60 req/min unauth) off
-// the hot path. Wall time is the slowest provider in the tier that ran, not
-// the sum.
-//
-// No provider needs an API key. A hit is only accepted when a light identity
-// guard confirms the hit really is the requested artist + album, because
-// free-text search happily ranks an unrelated album first.
-//
-// An empty album tag is resolved first: Deezer track search with the strict
-// `artist:"..." track:"..."` syntax and iTunes `entity=song` are queried for
-// the track, guarded by artist + title, and the returned album
-// (`album.title` / `collectionName`) becomes the effective album for the art
-// lookup. When resolution fails the lookup falls back to the artist-only
-// search.
-//
-// The resolved URL is handed to a callback that runs on the worker thread; the
-// callback must not call AIMP services, it should only publish the value to
-// the plugin which applies it on the next player notification.
 namespace AlbumArt {
 
 // Discord accepts external asset URLs up to 300 characters.
@@ -265,13 +231,9 @@ class Resolver {
   void WorkerMain();
   std::string LookupUncached(const std::string& artist, const std::string& album,
                              const std::string& track, bool* definitive);
-  // Online-rung diagnostics; called on the worker thread.
   void Log(const std::string& line);
   void LogOutcome(const std::string& artist, const std::string& album,
                   const std::string& url);
-  // MusicBrainz allows one request per second; Discogs allows 60 requests per
-  // minute unauthenticated, so it gets the same 1 req/s gate. Both gates are
-  // thread-safe: Tier 2 runs its providers on concurrent threads.
   void WaitForMusicBrainzSlot();
   void WaitForDiscogsSlot();
   bool TakeCached(const std::string& key, std::string* url);
@@ -281,9 +243,6 @@ class Resolver {
 
   std::mutex mutex_;
   std::condition_variable wake_;
-  // Set by Shutdown() and polled by the worker between provider requests so an
-  // in-flight resolve aborts promptly instead of running the full timeout
-  // budget while AIMP unloads.
   std::atomic<bool> stopping_{false};
   bool online_ = true;
 
@@ -300,8 +259,6 @@ class Resolver {
   std::unordered_map<std::string, std::string> cache_;
   std::deque<std::string> cache_order_;
 
-  // Rate-gate state. Guarded by gate_mutex_ (not mutex_) so Tier 2 threads and
-  // live tests share it safely.
   std::mutex gate_mutex_;
   std::chrono::steady_clock::time_point last_musicbrainz_request_{};
   std::chrono::steady_clock::time_point last_discogs_request_{};

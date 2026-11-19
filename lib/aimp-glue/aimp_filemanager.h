@@ -1,7 +1,3 @@
-//  In-repo replacement for the retired aimp-sdk-cpp-wrapper facade.
-//
-//  Aimp::FileManager::FileInfo is a reference counted owner of an IAIMPFileInfo
-//  plus the small typed property accessor the plugin uses.
 
 #ifndef AIMP_GLUE_AIMP_FILEMANAGER_H_
 #define AIMP_GLUE_AIMP_FILEMANAGER_H_

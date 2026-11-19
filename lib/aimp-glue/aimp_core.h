@@ -1,9 +1,3 @@
-//  In-repo replacement for the retired aimp-sdk-cpp-wrapper facade.
-//
-//  Aimp::Core::Service::Config is a thin, reference counted handle over
-//  IAIMPServiceConfig. The AIMP SDK recommends obtaining a service through
-//  IAIMPCore::QueryInterface and not keeping it cached, so every handle here
-//  queries on construction and releases on destruction.
 
 #ifndef AIMP_GLUE_AIMP_CORE_H_
 #define AIMP_GLUE_AIMP_CORE_H_

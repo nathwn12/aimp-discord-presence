@@ -1,9 +1,3 @@
-//  In-repo replacement for the retired aimp-sdk-cpp-wrapper facade.
-//
-//  Aimp::Plugin and Aimp::ExternalSettingsDialog adapt the plain C++ extension
-//  points implemented by the plugin (GetInfo / GetCategory / Load / Unload /
-//  Notification / ShowSettings) onto the official IAIMPPlugin and
-//  IAIMPExternalSettingsDialog interfaces from the AIMP SDK.
 
 #ifndef AIMP_GLUE_AIMP_PLUGIN_H_
 #define AIMP_GLUE_AIMP_PLUGIN_H_

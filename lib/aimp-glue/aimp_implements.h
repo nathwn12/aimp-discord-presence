@@ -1,9 +1,3 @@
-//  In-repo replacement for the retired aimp-sdk-cpp-wrapper facade.
-//
-//  Provides the Aimp::Implements<> helper that gives a plugin class the
-//  IUnknown bookkeeping (QueryInterface / AddRef / Release) for the AIMP
-//  interfaces it inherits, on top of the official AIMP SDK headers that ship
-//  in lib/aimp-sdk/Sources/Cpp.
 
 #ifndef AIMP_GLUE_AIMP_IMPLEMENTS_H_
 #define AIMP_GLUE_AIMP_IMPLEMENTS_H_

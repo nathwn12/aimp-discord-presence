@@ -32,37 +32,6 @@
 #include <thread>
 #include <vector>
 
-// Minimal, self-contained Discord local RPC client.
-//
-// Speaks the local IPC protocol directly over the named pipes
-// \\.\pipe\discord-ipc-{0..9}, so the plugin does not depend on the abandoned
-// discord-rpc library (which cannot express the activity `type` field).
-//
-// The pipe index is not tied to a Discord flavour: Stable, PTB and Canary
-// share the same index range, so a client can silently attach to an instance
-// other than the one it expects. The flavour is therefore identified from
-// `data.config.api_endpoint` of the READY dispatch, and logged together with
-// the index that was actually attached.
-//
-// The wire protocol, as implemented by the reference clients (discord-rpc,
-// pypresence, Lachee's C#, jagrosh's Java):
-//   * every frame is [opcode:uint32 LE][length:uint32 LE][utf-8 json];
-//   * HANDSHAKE (opcode 0) MUST be followed by reading inbound until the
-//     server dispatches READY; a SET_ACTIVITY written before READY is lost;
-//   * the server answers every command with an echo carrying the same nonce,
-//     or with evt:"ERROR" carrying {code,message}. A client that never reads
-//     inbound cannot tell "applied" from "rejected" from "connection closed",
-//     which is why the connection is drained continuously for its whole life;
-//   * PING (opcode 3) must be answered immediately with PONG (opcode 4);
-//   * CLOSE (opcode 2) is fatal; the connection is re-established after a
-//     backoff because only 2 connections per minute are allowed (60 on
-//     Canary).
-//
-// Discord must already be running; this client never launches it. A background
-// worker keeps the connection alive and coalesces presence updates so at most
-// one SET_ACTIVITY is in flight at a time. All pipe I/O uses overlapped
-// operations with a bounded wait, so a stalled Discord turns into a disconnect
-// instead of blocking AIMP's message thread.
 namespace DiscordIpc {
 
 // Discord activity schema limits (characters, i.e. UTF-8 codepoints).
@@ -81,23 +50,13 @@ constexpr uint32_t kOpcodeClose = 2;
 constexpr uint32_t kOpcodePing = 3;
 constexpr uint32_t kOpcodePong = 4;
 
-// Presence updates are coalesced: at most one SET_ACTIVITY is in flight, and
-// the next one waits for the server's echo of its nonce. A server that never
-// echoes must not wedge the client, so an unanswered update is abandoned
-// after this long (the pending value is kept and sent on the next echo).
 constexpr int kEchoTimeoutSeconds = 10;
 
-// The IPC server accepts 2 new connections per minute (60 on Canary), so a
-// reconnect loop is throttled. Back off from this base and stop doubling at
-// the maximum.
 constexpr int kReconnectDelaySeconds = 10;
 constexpr int kReconnectDelayMaxSeconds = 60;
 
-// Inbound is drained on this interval for as long as a connection lives.
 constexpr int kPollIntervalMilliseconds = 100;
 
-// An idle connection logs a liveness line this often, so a silent read loop
-// is distinguishable from a read loop that stopped running.
 constexpr int kStarvationWarnSeconds = 30;
 
 enum class ActivityType : int {
@@ -174,10 +133,6 @@ bool ParseFrameHeader(const char* data, size_t size, uint32_t* opcode, uint32_t*
 // identifies: "stable", "ptb", "canary", or "unknown" (logged as-is).
 std::string FlavourFromEndpoint(const std::string& endpoint);
 
-//
-// Owns everything that decides *what* the client should say, with no pipe I/O
-// at all, so the READY gate, the coalescing rule and the frame classification
-// are unit testable. Client drives it; Session never touches a HANDLE.
 class Session {
  public:
   Session(std::string application_id, int64_t pid);
@@ -250,8 +205,6 @@ class Session {
   bool pending_is_clear_ = false;
   Activity pending_;
 
-  // Last published intent, re-queued when a new connection reaches READY
-  // because the server forgets the presence when the pipe drops.
   bool has_last_intent_ = false;
   bool last_intent_was_clear_ = true;
   Activity last_intent_;
@@ -312,11 +265,8 @@ class Client {
   void ScheduleReconnect(const char* reason);
 
   bool WriteFrame(uint32_t opcode, const std::string& payload);
-  // Overlapped pipe I/O with a bounded wait; a timeout cancels the request and
-  // reports failure so the caller disconnects instead of blocking forever.
   bool WriteAll(const char* data, size_t size);
   bool ReadChunk(char* buffer, DWORD size, DWORD* read);
-  // Drains every byte the pipe currently holds, then parses whole frames.
   void PumpInbound();
   bool ProcessInbound();
   bool HandleInbound(uint32_t opcode, const std::string& payload);
@@ -327,7 +277,6 @@ class Client {
   HANDLE pipe_ = INVALID_HANDLE_VALUE;
   std::thread worker_;
 
-  // Shared between the caller and the worker.
   mutable std::mutex mutex_;
   mutable std::mutex log_mutex_;
   std::condition_variable wake_;
@@ -344,7 +293,6 @@ class Client {
   Clock::time_point next_connect_attempt_{};
   int reconnect_delay_seconds_ = kReconnectDelaySeconds;
 
-  // Worker-owned; never touched by the caller.
   bool connected_now_ = false;
   Session session_;
   std::string inbound_buffer_;

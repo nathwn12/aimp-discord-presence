@@ -26,29 +26,6 @@
 #include <string>
 #include <vector>
 
-// Kills the track-change flash: a NEW track's card is held until its cover
-// resolves, a definitive miss settles, or an adaptive monotonic deadline,
-// then published once. An empty file path is never published (the "AIMP"
-// fallback card).
-//
-// Adaptive wait: the gate learns from recent covers, recording the time from
-// track start to first real cover (local publish or online hit) and keeping
-// the last 8 samples. The wait budget is clamp(2 x median, 1000 ms, 3000 ms),
-// defaulting to 1500 ms with no history. A rapid skip (previous track lasted
-// under 1.5 s) targets 1000 ms. A cached/ready cover or a track with no cover
-// source pending sends immediately; a definitive empty lookup or a failed
-// publish releases a held card early.
-//
-// Tick honesty: AIMP's position tick fires every 1 s, and the plugin only
-// re-evaluates the gate there, so the budget is a target evaluated on the
-// next tick, not an exact millisecond deadline. A 1500 ms budget held from t
-// sends on the 2 s tick (up to 1 s late); a 3000 ms budget sends on the 3 s
-// tick. Sub-second precision is not promised.
-//
-// Pure and headless: time is injected as monotonic milliseconds (the plugin
-// passes GetTickCount64()), so the offline tests drive the whole sequence
-// with a fake clock without AIMP. All methods run on AIMP's message thread in
-// the plugin; no locking is done here.
 class PresenceUpdateGate {
  public:
   enum class Decision { Skip, Hold, Send };
@@ -75,7 +52,6 @@ class PresenceUpdateGate {
     pending_start_ms_ = 0;
     last_track_start_ms_ = 0;
     has_last_start_ = false;
-    // Samples survive: learning crosses stops and skips.
   }
 
   // Predicted wait for a NEW track starting at `now_ms`, given history and a
@@ -278,21 +254,14 @@ class PresenceUpdateGate {
     }
   }
 
-  // Last track seen (held or sent); a different key is a new track.
   std::string known_key_;
-  // Track currently held, while has_pending_ is true.
   std::string pending_key_;
-  // Monotonic expiry of the hold (track start + adaptive budget).
   uint64_t deadline_ms_ = 0;
   bool has_pending_ = false;
-  // Whether the held track's cover has resolved.
   bool artwork_ready_ = false;
-  // Track start of the held card, for the first-cover sample.
   uint64_t pending_start_ms_ = 0;
-  // Start of the most recent NEW track, for rapid-skip and late samples.
   uint64_t last_track_start_ms_ = 0;
   bool has_last_start_ = false;
-  // Last 8 track-start-to-first-cover durations, oldest first.
   std::vector<uint64_t> samples_;
 };
 

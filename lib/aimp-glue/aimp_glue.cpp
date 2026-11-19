@@ -1,8 +1,3 @@
-//  In-repo replacement for the retired aimp-sdk-cpp-wrapper facade.
-//
-//  Implements the service handles (IAIMPServiceConfig, IAIMPServicePlayer,
-//  IAIMPServiceMessageDispatcher) declared by the aimp-glue headers on top of
-//  the official AIMP SDK interfaces, plus the message hook registry.
 
 #include <windows.h>
 #include <unknwn.h>
@@ -23,7 +18,6 @@ namespace Aimp {
 
 namespace {
 
-// Core pointer and message hook registry
 
 std::atomic<IAIMPCore*> g_core{nullptr};
 
@@ -42,7 +36,6 @@ std::vector<HookEntry>& HookList() {
   return hooks;
 }
 
-// Small helpers
 
 class ScopedString {
  public:
@@ -239,7 +232,6 @@ void ConfigSet(IAIMPServiceConfig* service, const std::wstring& key, bool value)
   ConfigSet(service, key, value ? 1 : 0);
 }
 
-// Message hooks
 
 }  // namespace Detail
 

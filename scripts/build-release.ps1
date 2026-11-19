@@ -1,13 +1,3 @@
-# One-command local release build for aimp-discord-presence.
-#
-# Incremental by default: an existing build/ cache is reused (no --clean-first),
-# the Release DLL target rebuilds only what changed, and the offline test binary
-# recompiles only when its sources are newer. Pass -Clean to wipe build/ and
-# reconfigure from scratch.
-#
-# Usage (from the repository root):
-#   powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Clean
 param(
   [switch]$Clean
 )
@@ -35,17 +25,12 @@ $TestDir   = Join-Path $BuildDir 'tests'
 $TestExe   = Join-Path $TestDir 'cover_publisher_tests.exe'
 $Total     = [System.Diagnostics.Stopwatch]::StartNew()
 
-# --- Phase 1: configure (only when stale) ------------------------------------
 Invoke-Phase 'configure' {
   if ($Clean -and (Test-Path $BuildDir)) {
     Remove-Item -Recurse -Force $BuildDir
     Write-Host 'clean: removed build/'
   }
   $cache = Join-Path $BuildDir 'CMakeCache.txt'
-  # AUTOVERSIONING bakes `git rev-list --count HEAD` into the binary at
-  # configure time, so a moved HEAD is a stale cache even when CMakeLists
-  # files are untouched. A reconfigure never rebuilds by itself; MSBuild
-  # still recompiles only what the new defines touch.
   $headFile = Join-Path $BuildDir '.release-head'
   $script:Head = (& git rev-parse HEAD).Trim()
   $configuredHead = if (Test-Path $headFile) { (Get-Content $headFile -Raw).Trim() } else { '' }
@@ -57,7 +42,6 @@ Invoke-Phase 'configure' {
   }
 }
 
-# --- Phase 2: incremental Release build (never --clean-first) ----------------
 Invoke-Phase 'build' {
   & cmake --build $BuildDir --config Release --parallel
   Assert-Ok 'cmake build'
@@ -65,7 +49,6 @@ Invoke-Phase 'build' {
   Write-Host "dll: $DllPath"
 }
 
-# --- Phase 3: offline unit tests (recompile only when sources are newer) -----
 Invoke-Phase 'test' {
   $sources = @(
     'tests\cover_publisher_tests.cpp',
@@ -84,8 +67,6 @@ Invoke-Phase 'test' {
   if ((-not (Test-Path $TestExe)) -or ((Get-Item $TestExe).LastWriteTime -lt $newest) -or
       (-not (Test-Path $ArtTestExe)) -or ((Get-Item $ArtTestExe).LastWriteTime -lt $newestArt)) {
     if (-not (Test-Path $TestDir)) { New-Item -ItemType Directory $TestDir | Out-Null }
-    # cl needs the MSVC environment; import it once via VsDevCmd.
-    # Portable VS discovery: vswhere -latest, with VSINSTALLDIR fallback.
     $vswhere = (Get-Command vswhere -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
     if (-not $vswhere) { $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe' }
     $vsInstall = if (Test-Path $vswhere) { ((& $vswhere -latest -products * -property installationPath) | Select-Object -First 1).Trim() } else { '' }
@@ -124,7 +105,6 @@ Invoke-Phase 'test' {
   Assert-Ok 'album_art_tests'
 }
 
-# --- Phase 4: version-stamped copy --------------------------------------------
 Invoke-Phase 'stamp' {
   $ver = (Get-Content (Join-Path $Repo 'src\product.version') | Where-Object { $_ -match '\S' })
   $buildNum = (& git rev-list --count HEAD).Trim()

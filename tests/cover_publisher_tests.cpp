@@ -1,18 +1,3 @@
-// Offline unit tests for src/cover_publisher.cpp and the pure album-art
-// identity helpers (src/album_art.cpp, src/presence_layout.h).
-//
-// These tests never touch the network. The cover_publisher implementation is
-// compiled into this translation unit, so its pure helpers (URL
-// classification, multipart assembly, boundary generation, SHA-256 cache keys,
-// cache file handling) are exercised directly; album_art.cpp is compiled as a
-// second translation unit and linked, and the presence layout is header-only.
-//
-// Build (from the repository root):
-//   cl /nologo /std:c++17 /W4 /WX /EHsc tests\cover_publisher_tests.cpp src\album_art.cpp /link winhttp.lib
-// Run (the optional argument names the directory for the on-disk cache test):
-//   cover_publisher_tests.exe [cache-directory]
-// The default directory is %TEMP%\cover_publisher_cache_tests. The run creates
-// and removes its own scratch file inside that directory.
 
 #include "../src/cover_publisher.cpp"
 
@@ -102,7 +87,6 @@ void TestClassifier() {
   const Result junk = ClassifyUploadResponse(200, "not a url");
   Check(!junk.ok && junk.reason.find("200") != std::string::npos, "200 + junk -> reason names status");
 
-  // Strict success classification per host: only that host's own bare URL.
   const Result litterbox_ok = ClassifyUploadResponse(200, url, UploadShape::kLitterbox);
   Check(litterbox_ok.ok && litterbox_ok.url == url, "litterbox 200 + litterbox url -> ok");
 
@@ -114,8 +98,6 @@ void TestClassifier() {
   Check(uguu_trimmed.ok && uguu_trimmed.url == uguu_url,
         "uguu 200 + url with newline -> ok, trimmed");
 
-  // A 200 whose body is an HTML page, a JSON blob, or the wrong host's URL is a
-  // failure: the response must be a bare URL, never arbitrary text.
   const Result html = ClassifyUploadResponse(
       200, "<html><body>Forbidden</body></html>", UploadShape::kUguu);
   Check(!html.ok && html.reason == "http-200-unexpected-body",
@@ -132,9 +114,6 @@ void TestClassifier() {
   Check(!uguu_empty.ok && uguu_empty.reason == "empty-body",
         "uguu 200 + empty body -> failure");
 
-  // uguu round-robins across single-label subdomains. Every one of these is a
-  // real response and must be accepted; pinning the subdomain to one letter
-  // rejected valid covers as "unexpected body" (measured live: h.uguu.se).
   const char* const kUguuLiveUrls[] = {
       "https://n.uguu.se/nUoxUKCo.png",
       "https://h.uguu.se/yHYDFJRh.jpg",
@@ -146,7 +125,6 @@ void TestClassifier() {
     Check(accepted.ok && accepted.url == live,
           std::string("uguu subdomain accepted: ") + live);
   }
-  // The subdomain must still be uguu's own, so a lookalike host is rejected.
   const Result lookalike = ClassifyUploadResponse(
       200, "https://n.uguu.se.evil.test/x.png", UploadShape::kUguu);
   Check(!lookalike.ok && lookalike.reason == "http-200-unexpected-body",
@@ -155,14 +133,11 @@ void TestClassifier() {
       200, "https://evil.test/n.uguu.se/x.png", UploadShape::kUguu);
   Check(!no_subdomain.ok, "a foreign host carrying the uguu path is rejected");
 
-  // A WAF 403 (the measured litterbox failure) names its status and is never ok.
   const Result forbidden = ClassifyUploadResponse(403, "<html>BunkerWeb</html>");
   Check(!forbidden.ok && forbidden.reason == "http-403", "403 -> failure named by status");
 }
 
 
-// Mirrors CoverPublisher::Publish's host loop as a pure decision over per-host
-// outcomes, so the ordered fallback is asserted without touching the network.
 Result RunHostFallback(const std::vector<Result>& per_host) {
   Result last;
   for (size_t i = 0; i < per_host.size(); ++i) {
@@ -177,15 +152,12 @@ Result RunHostFallback(const std::vector<Result>& per_host) {
 void TestHostFallback() {
   const std::string uguu_url = "https://n.uguu.se/nUoxUKCo.png";
 
-  // The working host is first, so the common path needs no fallback at all: a
-  // 200 from host 0 is the overall result.
   std::vector<Result> happy;
   happy.push_back(ClassifyUploadResponse(200, uguu_url, UploadShape::kUguu));
   const Result direct = RunHostFallback(happy);
   Check(direct.ok && direct.url == uguu_url,
         "host fallback: a working host 0 is used directly, no fallback needed");
 
-  // Host 0 fails (the dormant litterbox answering 403) and the next succeeds.
   std::vector<Result> outcomes;
   outcomes.push_back(ClassifyUploadResponse(200, uguu_url, UploadShape::kUguu));
   outcomes.push_back(ClassifyUploadResponse(403, "<html>BunkerWeb</html>"));
@@ -195,8 +167,6 @@ void TestHostFallback() {
   Check(fell_back.ok && fell_back.url == uguu_url,
         "host fallback: later host failure never discards an earlier success");
 
-  // All hosts fail: overall failure. The caller must then try the online rung,
-  // which may still supply an image.
   std::vector<Result> all_fail;
   all_fail.push_back(ClassifyUploadResponse(403, ""));
   all_fail.push_back(ClassifyUploadResponse(503, ""));
@@ -217,17 +187,7 @@ void TestHostFallback() {
 }
 
 
-// The live transport measurement reported a 37-byte closing suffix and a
-// one-byte-larger part for JPEG. This builder keeps both invariants. Its prefix
-// is 315 bytes for a PNG part: measured arithmetic (347) came from a probe whose
-// filename/headers differed (the 32-byte delta is exactly one shorter filename
-// plus header choices), so the assertion pins this builder's own framing
-// instead of a probe-specific constant.
 void TestMultipartArithmetic() {
-  // The per-operation transport budget must stay small enough that a hung host
-  // costs the card seconds, not tens of seconds. Measured: a real upload takes
-  // 0.8-4.1 s, so anything above ~10 s is a stall the owner would see as a
-  // missing image.
   Check(kTotalTimeoutMs <= 10000,
         "the per-operation transport budget is bounded so a hung host cannot stall the chain");
   Check(kTotalTimeoutMs >= 4000,
@@ -266,8 +226,6 @@ void TestMultipartArithmetic() {
 
 
 void TestHostList() {
-  // Without Drive credentials the chain is the keyless one, unchanged in order
-  // and size.
   CoverPublisher::ConfigureAuth("", "");
   CoverPublisher::ConfigureDrive("", "", "");
   CoverPublisher::ConfigureHost("auto");
@@ -287,7 +245,6 @@ void TestHostList() {
   }
   Check(github_absent, "no chain without drive creds names a github host");
 
-  // Each keyless entry carries its own endpoint and multipart shape.
   Check(std::wstring(kBaseUploadHosts[0].host) == L"catbox.moe" &&
             std::wstring(kBaseUploadHosts[0].path) == L"/user/api.php" &&
             kBaseUploadHosts[0].shape == UploadShape::kCatbox,
@@ -301,8 +258,6 @@ void TestHostList() {
             kBaseUploadHosts[2].shape == UploadShape::kLitterbox,
         "litterbox owns its endpoint and fileToUpload shape");
 
-  // A legacy token changes nothing: the GitHub host is gone, so ConfigureAuth
-  // is ignored and the chain stays the three keyless hosts.
   CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   Check(ConfiguredHostCount() == 3, "a legacy token adds no host");
   Check(ConfiguredHostName(0) == "catbox.moe", "catbox stays first with a legacy token");
@@ -310,7 +265,6 @@ void TestHostList() {
   Check(ConfiguredHostName(2) == "litter.catbox.moe",
         "litterbox stays last with a legacy token");
 
-  // Restore the default so the later tests still see the keyless chain.
   CoverPublisher::ConfigureAuth("", "");
   CoverPublisher::ConfigureDrive("", "", "");
   CoverPublisher::ConfigureHost("auto");
@@ -347,22 +301,18 @@ void TestMultipartShapes() {
             uguu.find("\r\nContent-Type: image/png\r\n") != std::string::npos,
         "uguu file part keeps filename and content type");
 
-  // The two shapes genuinely differ, and each keeps the one-part framing.
   Check(litterbox != uguu, "the two host bodies differ");
   Check(uguu.size() < litterbox.size(), "uguu's single part is smaller than litterbox's three");
   Check(uguu.size() == uguu.find("--" + boundary + "--") + 0 ||
             uguu.find("--" + boundary + "--\r\n") ==
                 uguu.size() - ("--" + boundary + "--\r\n").size(),
         "uguu body closes with the boundary delimiter");
-  // The image bytes still land exactly once in each body.
   Check(uguu.find(std::string(64, 0x2a)) != std::string::npos,
         "uguu body carries the image bytes");
 }
 
 
 void TestCentreSquareCrop() {
-  // The re-encode crops to the shorter side, then caps at 512: 1000x800 becomes
-  // an 800 square, capped to 512.
   const CompressionPlan wide = PlanCompression(1000, 800, 5 * 1024 * 1024);
   Check(wide.reencode && wide.width == 512 && wide.height == 512,
         "1000x800 -> an 800 square capped at 512");
@@ -372,8 +322,6 @@ void TestCentreSquareCrop() {
   Check(tall.reencode && tall.width == 400 && tall.height == 400,
         "a 400x900 portrait crops to a 400 square (shorter side under 512)");
 
-  // The skip rule is unchanged: a source already square, at or below 512 px and
-  // at most 256 KB, is not re-encoded.
   const CompressionPlan already_square = PlanCompression(512, 512, 100 * 1024);
   Check(!already_square.reencode,
         "an already-square image <=512 px and <=256 KB is NOT re-encoded");
@@ -382,12 +330,6 @@ void TestCentreSquareCrop() {
         "an already-square image over 256 KB re-encodes in place at 512");
 }
 
-//
-// The GitHub host is gone: only Google Drive plus the keyless hosts remain.
-// CoverToken/CoverRepo are accepted without error and enable nothing, a legacy
-// CoverHost=github reads as auto, and cached raw.githubusercontent.com URLs
-// are legacy (never reused). This test pins all three, whatever the
-// credentials, so no configuration can smuggle the removed host back in.
 
 void TestLegacyAuthIgnored() {
   CoverPublisher::ConfigureDrive("", "", "");
@@ -396,8 +338,6 @@ void TestLegacyAuthIgnored() {
   CoverPublisher::ConfigureAuth("", "");
   Check(ConfiguredHostCount() == 3, "legacy auth: empty values -> the keyless chain");
 
-  // Every legacy token/repo shape is ignored without error: no host is added,
-  // and none is ever named github.com.
   const char* tokens[] = {"test-token", "", "test-token", "test-token"};
   const char* repos[] = {"octo/art", "", "no-slash-here", "owner/repo"};
   for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); ++i) {
@@ -414,8 +354,6 @@ void TestLegacyAuthIgnored() {
 }
 
 void TestNoGitHubHost() {
-  // Even with Drive credentials (the fullest chain), no host is github.com,
-  // and the pinned legacy policy still reads as auto.
   CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
   const char* policies[] = {"auto", "drive", "keyless", "github", "GITHUB", " Drive "};
@@ -437,8 +375,6 @@ void TestNoGitHubHost() {
   Check(ParseCoverHostPolicy("GITHUB") == CoverHostPolicy::kAuto,
         "no-github: the github pin is case-insensitive");
 
-  // A legacy cached URL names no host: it must upgrade or revalidate, never be
-  // served as a github.com hit.
   const std::string legacy_name(64, 'a');
   const std::string legacy_url =
       "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence-art/main/covers/" +
@@ -489,15 +425,11 @@ void TestDriveSecretNeverLeaks() {
   g_log_lines.clear();
   CoverPublisher::SetLogger(CaptureLog);
 
-  // Positive control: the recorder is live before we conclude anything from
-  // its silence.
   CoverPublisher::ConfigureDrive("", "", "");
   CoverPublisher::ConfigureHost("auto");
   CoverPublisher::LogHostConfiguration();
   Check(!g_log_lines.empty(), "the log recorder is live (positive control)");
 
-  // With credentials, every emitted line - the host line, the drive state, a
-  // drive failure - names states and reasons only, never a value.
   CoverPublisher::ConfigureDrive("client-id-value", "GOCSPX-secret-value", "C:\\temp\\state.txt");
   CoverPublisher::ConfigureHost("drive");
   CoverPublisher::LogHostConfiguration();
@@ -565,29 +497,21 @@ void TestAlbumIdentityKeys() {
       "D:\\Software\\SoulseekQt\\downloads\\complete\\ZWE1HVNDXR - untitled take.flac";
   const std::string cover = "https://litter.catbox.moe/ofx201.jpg";
 
-  // An album tag is still the whole identity: artist + "\n" + album, with the
-  // file path never part of an albumed key.
   const std::string album_key = AlbumArt::BuildAlbumKey(artist, album, file);
   Check(album_key == artist + "\n" + album, "album tag -> key is artist + newline + album");
   Check(album_key.find(file) == std::string::npos, "an albumed key never embeds the file path");
 
-  // ...and a cover resolved under that key is still adopted.
   std::string source;
   Check(PresenceLayout::ResolveLargeImage(album_key, album_key, cover, "", "", &source) == cover &&
             source == "local",
         "a resolved cover is applied for an albumed track");
 
-  // An album-less track has no album identity, but it still has an identity:
-  // the old collapsed key (artist + "\n") must not come back, because a cover
-  // resolved for it is applied even though the album tag is empty.
   const std::string albumless_key = AlbumArt::BuildAlbumKey(artist, "", file);
   Check(albumless_key != artist + "\n", "album-less key no longer collapses to artist + newline");
   Check(PresenceLayout::ResolveLargeImage(albumless_key, albumless_key, cover, "", "", &source) == cover &&
             source == "local",
         "an empty album does not suppress the resolved cover");
 
-  // The caption is still governed by the album tag alone: only the image
-  // survives an empty album, never large_text.
   PresenceLayout::TrackFields caption_track;
   caption_track.artist = artist;
   caption_track.title = "LOVELY BASTARDS";
@@ -595,15 +519,11 @@ void TestAlbumIdentityKeys() {
       caption_track, "{title}", "{artist}", "{album}");
   Check(fields.large_text.empty(), "an album-less track still omits the large_text caption");
 
-  // Two album-less files by one artist are two identities, and one's cover is
-  // never adopted for the other.
   const std::string other_key = AlbumArt::BuildAlbumKey(artist, "", other_file);
   Check(albumless_key != other_key, "two album-less files by one artist get different keys");
   Check(PresenceLayout::ResolveLargeImage(other_key, albumless_key, cover, "", "", &source).empty(),
         "an album-less file cannot inherit another file's cover");
 
-  // An album-less key never collides with a real album's key for the same
-  // artist, in either direction, so neither can overwrite the other's cover.
   Check(albumless_key != album_key, "album-less key never equals a real album's key");
   Check(PresenceLayout::ResolveLargeImage(album_key, albumless_key, cover, "", "", &source).empty(),
         "an album-less cover cannot overwrite a real album's stored cover");
@@ -623,8 +543,6 @@ void TestCoverFallbackChain() {
       "https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg";
   std::string source;
 
-  // (a) A published local cover wins; the online URL is not used, and the
-  // field is not left empty.
   const std::string local_win =
       PresenceLayout::ResolveLargeImage(key, key, local_url, key, online_url, &source);
   Check(local_win == local_url, "chain: local cover is the resolved image");
@@ -632,24 +550,17 @@ void TestCoverFallbackChain() {
   Check(local_win != online_url && !local_win.empty(),
         "chain: online is not used and the field is not empty when local wins");
 
-  // (b) With no local cover, the online chain's URL is used; the field is not
-  // left empty.
   const std::string online_win =
       PresenceLayout::ResolveLargeImage(key, "", "", key, online_url, &source);
   Check(online_win == online_url, "chain: online url is the resolved image");
   Check(source == "online", "chain: online url names its source");
   Check(!online_win.empty(), "chain: the field is not empty when online wins");
 
-  // (c) With neither source resolved, the field is empty (omitted on the wire,
-  // so Discord renders its native placeholder) - never a stand-in image URL.
   const std::string empty =
       PresenceLayout::ResolveLargeImage(key, "", "", "", "", &source);
   Check(empty.empty(), "chain: no source resolves to an empty image field");
   Check(source == "none", "chain: the empty field names its source");
 
-  // (d) The Task 1 regression: an album-less track with no local cover still
-  // triggers the online lookup (the album tag is not part of the gate), and
-  // its result is adopted under the file-path identity.
   Check(PresenceLayout::ShouldRequestOnlineArtwork(true, true, artist, ""),
         "chain: album-less track still triggers the online lookup");
   const std::string albumless_key = AlbumArt::BuildAlbumKey(artist, "", file);
@@ -660,8 +571,6 @@ void TestCoverFallbackChain() {
   Check(!PresenceLayout::ShouldRequestOnlineArtwork(true, false, artist, ""),
         "chain: online disabled never triggers a lookup");
 
-  // (e) The literal "aimp" - a foreign Discord application's bundled asset -
-  // is never the resolved image in any case.
   Check(local_win != "aimp" && online_win != "aimp" && empty != "aimp",
         "chain: literal aimp is never the resolved image");
 }
@@ -671,12 +580,10 @@ void TestCardLargeImagePlaceholder() {
   using PresenceLayout::kTransparentLargeImageUrl;
   using PresenceLayout::ResolveCardLargeImage;
 
-  // The placeholder URL is pinned once, so it cannot drift silently.
   Check(std::string(kTransparentLargeImageUrl) ==
             "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence/"
             "main/.github/aimp_icons/transparent.png",
         "card: the transparent placeholder url is pinned");
-  // AppendImageField truncates at 300 characters.
   Check(std::strlen(kTransparentLargeImageUrl) < 300,
         "card: the placeholder url fits the wire truncation limit");
 
@@ -686,20 +593,16 @@ void TestCardLargeImagePlaceholder() {
       "https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg";
   std::string source;
 
-  // (a) Nothing resolved and nothing keyed: the placeholder is sent and the
-  // resolver's own source verdict is unchanged.
   const std::string no_cover = ResolveCardLargeImage(key, "", "", "", "", &source);
   Check(no_cover == kTransparentLargeImageUrl, "card: no cover sends the placeholder");
   Check(source == "none", "card: the placeholder keeps the resolver's none source");
 
-  // (b) A published local cover wins and is not replaced.
   const std::string local_win =
       ResolveCardLargeImage(key, key, local_url, key, online_url, &source);
   Check(local_win == local_url && local_win != kTransparentLargeImageUrl,
         "card: a local cover beats the placeholder");
   Check(source == "local", "card: the local cover keeps its source");
 
-  // (c) No local cover: the online url is sent, not the placeholder.
   const std::string online_win =
       ResolveCardLargeImage(key, "", "", key, online_url, &source);
   Check(online_win == online_url && online_win != kTransparentLargeImageUrl &&
@@ -707,8 +610,6 @@ void TestCardLargeImagePlaceholder() {
         "card: an online url beats the placeholder");
   Check(source == "online", "card: the online url keeps its source");
 
-  // (d) A stale key is never adopted: the placeholder substitutes, never a url
-  // that belongs to another track.
   const std::string other_key = AlbumArt::BuildAlbumKey("Daft Punk", "Homework", "");
   const std::string stale =
       ResolveCardLargeImage(key, other_key, local_url, other_key, online_url, &source);
@@ -717,15 +618,11 @@ void TestCardLargeImagePlaceholder() {
         "card: a stale key never sends another track's cover");
   Check(source == "none", "card: the stale key keeps the resolver's none source");
 
-  // (e) Album-art display disabled: ResolveLargeImageLocked empties both urls by
-  // construction, and the card still carries the placeholder - disabled art is
-  // transparent, never yellow.
   const std::string disabled = ResolveCardLargeImage(key, key, "", key, "", &source);
   Check(disabled == kTransparentLargeImageUrl,
         "card: art display disabled sends the placeholder");
   Check(!disabled.empty(), "card: art display disabled never leaves the image empty");
 
-  // No input shape leaves the card image blank.
   Check(!ResolveCardLargeImage("", "", "", "", "", nullptr).empty() &&
             !ResolveCardLargeImage(key, key, "", "", "", nullptr).empty() &&
             !ResolveCardLargeImage("", key, local_url, "", online_url, nullptr).empty(),
@@ -742,28 +639,22 @@ void TestCoverLayerOrder() {
   const std::string online =
       "https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg";
 
-  // Layer 1: embedded art published -> embedded wins, nothing below is used.
   Check(ResolveCoverLayer(embedded, sidecar, online) == CoverLayer::kLocalEmbedded,
         "layer 1: published embedded art is the chosen layer");
   Check(ResolveCoverLayer(embedded, "", "") == CoverLayer::kLocalEmbedded,
         "layer 1: embedded wins even when nothing else resolved");
 
-  // Layer 2: no embedded art, a sidecar published -> sidecar wins.
   Check(ResolveCoverLayer("", sidecar, online) == CoverLayer::kLocalSidecar,
         "layer 2: a published sidecar wins when embedded art is absent");
   Check(ResolveCoverLayer("", sidecar, "") == CoverLayer::kLocalSidecar,
         "layer 2: sidecar wins even when online did not resolve");
 
-  // Layer 3: neither local layer delivered, online resolved -> online wins.
   Check(ResolveCoverLayer("", "", online) == CoverLayer::kOnlineKeyless,
         "layer 3: online wins when both local layers failed");
 
-  // Layer 4: no image is reached ONLY when all three above produced nothing.
   Check(ResolveCoverLayer("", "", "") == CoverLayer::kNoImage,
         "layer 4: no image only when embedded, sidecar and online all failed");
 
-  // A local art extract that could not be published leaves its URL empty, so
-  // the chain descends to online - never straight to no-image.
   const std::string embedded_failed = "";   // extracted but upload failed
   const std::string sidecar_failed = "";    // sidecar found but upload failed
   Check(ResolveCoverLayer(embedded_failed, sidecar_failed, online) ==
@@ -773,7 +664,6 @@ void TestCoverLayerOrder() {
             CoverLayer::kNoImage,
         "layer order: no image is not chosen while online resolved");
 
-  // The layer names are stable and greppable.
   Check(std::string(PresenceLayout::CoverLayerName(CoverLayer::kLocalEmbedded)) ==
             "local-embedded",
         "layer names: 1 is local-embedded");
@@ -786,8 +676,6 @@ void TestCoverLayerOrder() {
   Check(std::string(PresenceLayout::CoverLayerName(CoverLayer::kNoImage)) == "no-image",
         "layer names: 4 is no-image");
 
-  // The online request is never suppressed by a local cover existing: a track
-  // whose local art was found (and may still fail to publish) still asks online.
   Check(PresenceLayout::ShouldRequestOnlineForTrack(true, true, "Daft Punk", true, false),
         "layer order: local art found, not yet published -> online still requested");
   Check(PresenceLayout::ShouldRequestOnlineForTrack(true, true, "Daft Punk", true, true),
@@ -805,13 +693,6 @@ void TestPublishPendingNotBlank() {
   using PresenceLayout::CoverLayer;
   using PresenceLayout::ResolveCoverLayer;
 
-  // While a local publish is in flight (no URL yet) the online rung may not
-  // have resolved either; the resolver then yields an empty image field, which
-  // the wire builder omits (AppendImageField skips empties), so Discord shows
-  // its native placeholder instead of a stand-in. The *card* is not blanked
-  // because the plugin holds the previous large_image until a *new* value is
-  // resolved: applying the same value is a no-op, so a pending publish cannot
-  // clear the image by re-applying an empty over an empty.
   const std::string key = AlbumArt::BuildAlbumKey("Daft Punk", "Discovery", "");
   const std::string resolved_pending =
       PresenceLayout::ResolveLargeImage(key, "", "", "", "", nullptr);
@@ -823,7 +704,6 @@ void TestPublishPendingNotBlank() {
         "pending: the empty field names its source");
   Check(ResolveCoverLayer("", "", "") == CoverLayer::kNoImage,
         "pending: with nothing resolved yet the no-image layer holds");
-  // Once a local or online URL lands, it differs from empty and is applied.
   const std::string after_publish =
       PresenceLayout::ResolveLargeImage(key, key, "https://n.uguu.se/abc.png", "", "", nullptr);
   Check(!after_publish.empty() && after_publish != resolved_pending,
@@ -837,8 +717,6 @@ void TestOnlineRungDecision() {
   const std::string key = AlbumArt::BuildAlbumKey(artist, album, "");
   std::string source;
 
-  // The request predicate: a cover-less track with a non-empty album is looked
-  // up. The album tag is not part of the gate, and neither is the local cover.
   Check(PresenceLayout::ShouldRequestOnlineArtwork(true, true, artist, album),
         "online rung: a cover-less albumed track triggers the lookup");
   Check(!PresenceLayout::ShouldRequestOnlineArtwork(false, true, artist, album),
@@ -848,8 +726,6 @@ void TestOnlineRungDecision() {
   Check(!PresenceLayout::ShouldRequestOnlineArtwork(true, true, "", album),
         "online rung: an empty artist suppresses the lookup");
 
-  // Resolved: a provider hit that survives the identity guard yields its URL,
-  // and the resolved URL is what the plugin applies - no stand-in is used.
   const std::string deezer_body =
       "{\"data\":[{\"title\":\"Discovery\",\"artist\":{\"name\":\"Daft Punk\"},"
       "\"cover_xl\":\"https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg\"}],"
@@ -878,8 +754,6 @@ void TestOnlineRungDecision() {
             "https://is1-ssl.mzstatic.com/image/thumb/Music/xyz/600x600bb.jpg",
         "online rung: the itunes artwork url is upscaled to 600x600");
 
-  // Not found: every provider answered and none matched, so the resolver
-  // reports no URL and the plugin sends no image (field omitted).
   const std::string dbz_artist = "Dragon Ball Z";
   const std::string dbz_album = "Dragon Ball Z BGM Collection Disc 1";
   const std::string dbz_key = AlbumArt::BuildAlbumKey(dbz_artist, dbz_album, "");
@@ -890,8 +764,6 @@ void TestOnlineRungDecision() {
   Check(AlbumArt::ExtractArtworkUrl(empty_deezer, AlbumArt::Provider::kDeezer).empty(),
         "online rung: an empty deezer answer yields no url");
 
-  // The real-world iTunes case: a hit for another album must be rejected, not
-  // adopted. The guard is what keeps an unrelated cover off the card.
   const std::string itunes_unrelated =
       "{\"resultCount\":1,\"results\":[{\"artistName\":\"Dragon Ball Z\","
       "\"collectionName\":\"Dragon '98 Special Live\","
@@ -913,17 +785,11 @@ void TestOnlineRungDecision() {
         "online rung: not-found sends no image");
   Check(empty != deezer_url, "online rung: the empty field is not another album's url");
 
-  // A URL resolved for a different identity is never adopted for this one.
   const std::string other_key = AlbumArt::BuildAlbumKey(artist, "Homework", "");
   Check(PresenceLayout::ResolveLargeImage(key, "", "", other_key, deezer_url, &source).empty(),
         "online rung: another album's resolved url is never applied");
 }
 
-//
-// (1) the request predicate fires; (2) album-empty is no longer a definitive
-// nothing-to-query case; (3) an artist-only hit is accepted; (4) a wrong-album
-// hit is still rejected when the request names an album; (5) album-less keys
-// stay file-path distinct; (6) the decision table picks online when it resolves.
 
 void TestAlbumlessOnlineRung() {
   const std::string artist = "Daft Punk";
@@ -933,8 +799,6 @@ void TestAlbumlessOnlineRung() {
       "https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg";
   std::string source;
 
-  // (1) ShouldRequestOnlineArtwork is true for artist-present + album-empty, and
-  // the other combinations are unchanged.
   Check(PresenceLayout::ShouldRequestOnlineArtwork(true, true, artist, ""),
         "albumless: artist present + album empty requests online artwork");
   Check(!PresenceLayout::ShouldRequestOnlineArtwork(true, true, "", ""),
@@ -944,17 +808,10 @@ void TestAlbumlessOnlineRung() {
   Check(!PresenceLayout::ShouldRequestOnlineArtwork(true, false, artist, ""),
         "albumless: use_online off still suppresses the request");
 
-  // (2) The resolver's genuine nothing-to-query case is an empty artist only: an
-  // empty album is an artist-only search, not a definitive miss. This is proven
-  // through observable behavior - the request predicate used to be the thing
-  // that refused album-empty, and it must now let it through; the identity guard
-  // is exercised below to show the artist-only path is reachable and accepted.
   const std::string artist_only_body =
       "{\"data\":[{\"title\":\"Random Access Memories\",\"artist\":{\"name\":\"Daft Punk\"},"
       "\"cover_xl\":\"https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg\"}],"
       "\"total\":1}";
-  // (3) An artist-only match is ACCEPTED when the requested album is empty, even
-  // though the hit names a real album the caller did not ask about.
   Check(AlbumArt::SearchResultMatches(artist_only_body, AlbumArt::Provider::kDeezer, artist, ""),
         "albumless: an artist-only hit is accepted when the requested album is empty");
   Check(AlbumArt::MetadataMatches("", "Random Access Memories"),
@@ -962,8 +819,6 @@ void TestAlbumlessOnlineRung() {
   Check(!AlbumArt::MetadataMatches("Daft Punk", ""),
         "albumless: an empty candidate is still rejected");
 
-  // (4) REGRESSION: a wrong-album hit is still REJECTED when the requested album
-  // is non-empty, so the guard did not become a rubber stamp.
   const std::string wrong_album_body =
       "{\"data\":[{\"title\":\"Homework\",\"artist\":{\"name\":\"Daft Punk\"},"
       "\"cover_xl\":\"https://e-cdns-images.dzcdn.net/images/cover/abc123/600x600-000000-80-0-0.jpg\"}],"
@@ -974,8 +829,6 @@ void TestAlbumlessOnlineRung() {
   Check(!AlbumArt::MetadataMatches("Discovery", "Homework"),
         "albumless regression: MetadataMatches rejects a different present album");
 
-  // (5) REGRESSION: an album-less BuildAlbumKey still embeds the file path, so
-  // two album-less tracks by one artist produce DIFFERENT keys.
   const std::string key_a = AlbumArt::BuildAlbumKey(artist, "", file_a);
   const std::string key_b = AlbumArt::BuildAlbumKey(artist, "", file_b);
   Check(key_a.find(file_a) != std::string::npos,
@@ -985,7 +838,6 @@ void TestAlbumlessOnlineRung() {
   Check(key_a != artist + "\n",
         "albumless: the key does not collapse to artist + newline");
 
-  // (6) Decision table: album-less + online-resolved => the ONLINE url is chosen.
   const std::string applied =
       PresenceLayout::ResolveLargeImage(key_a, "", "", key_a, online_url, &source);
   Check(applied == online_url && source == "online",
@@ -1018,8 +870,6 @@ void TestSha256() {
 
 
 void TestCompressionPlan() {
-  // The re-encode is a 512 px centre-square: crop to the shorter side first,
-  // then cap that square at 512. Aspect is intentionally NOT preserved.
   const CompressionPlan large = PlanCompression(2000, 1500, 5 * 1024 * 1024);
   Check(large.reencode, "large image is re-encoded");
   Check(large.width == 512 && large.height == 512,
@@ -1227,14 +1077,6 @@ void TestCompressionPreparation() {
   Check(fallback.note.find("wic-failed=") != std::string::npos, "fallback note names the WIC failure");
 }
 
-//
-// FindSidecarArt's walk touches the filesystem, but the choice it makes inside
-// a directory is pure: PickBestSidecarName sees only a list of names. These
-// tests exercise the priority order, the case-insensitivity, the Windows Media
-// Player names, the extension gate, the 4-level bound, first-hit-wins and the
-// empty result offline. `SidecarLevels` mirrors the walk's level arithmetic
-// (folder = level 0, stop after kMaxSidecarLevels ascents) so the bound is
-// asserted without depending on the machine's directory layout.
 
 std::vector<std::wstring> Names(std::initializer_list<const wchar_t*> items) {
   std::vector<std::wstring> names;
@@ -1244,8 +1086,6 @@ std::vector<std::wstring> Names(std::initializer_list<const wchar_t*> items) {
   return names;
 }
 
-// Depth at which a cover named `cover` is found when only one level holds it:
-// 0 = the track folder. Returns -1 when the cover is out of the walk's reach.
 std::wstring PickNameAtLevel(const std::vector<std::vector<std::wstring>>& folders,
                              int level) {
   if (level < 0 || level >= static_cast<int>(folders.size())) {
@@ -1265,8 +1105,6 @@ int SidecarLevels(const std::vector<std::vector<std::wstring>>& folders) {
 }
 
 void TestSidecarSelection() {
-  // (1) Priority: cover > folder > front > album > albumart, regardless of the
-  // order the directory entries arrive in.
   Check(LocalArt::PickBestSidecarName(
             Names({L"front.png", L"folder.jpg", L"cover.jpg"})) == L"cover.jpg",
         "sidecar: cover.jpg beats folder.jpg and front.png");
@@ -1288,7 +1126,6 @@ void TestSidecarSelection() {
             Names({L"cover.png", L"cover.jpg"})) == L"cover.jpg",
         "sidecar: equal priority breaks on the lexicographically smaller name");
 
-  // (2) Case-insensitivity.
   Check(LocalArt::PickBestSidecarName(Names({L"COVER.JPG"})) == L"COVER.JPG",
         "sidecar: COVER.JPG is accepted");
   Check(LocalArt::PickBestSidecarName(Names({L"Folder.PNG"})) == L"Folder.PNG",
@@ -1297,7 +1134,6 @@ void TestSidecarSelection() {
             Names({L"folder.jpg", L"COVER.JPG"})) == L"COVER.JPG",
         "sidecar: case is folded for priority too");
 
-  // (3) Windows Media Player names: the AlbumArt prefix is accepted.
   Check(LocalArt::PickBestSidecarName(Names({L"AlbumArtSmall.jpg"})) == L"AlbumArtSmall.jpg",
         "sidecar: AlbumArtSmall.jpg is accepted");
   Check(LocalArt::PickBestSidecarName(
@@ -1310,7 +1146,6 @@ void TestSidecarSelection() {
   Check(LocalArt::PickBestSidecarName(Names({L"cover.jpg", L"AlbumArtSmall.jpg"})) == L"cover.jpg",
         "sidecar: AlbumArtSmall ranks below the exact cover name");
 
-  // (4) Extension gate.
   Check(LocalArt::PickBestSidecarName(Names({L"cover.txt"})).empty(),
         "sidecar: cover.txt is rejected");
   Check(LocalArt::PickBestSidecarName(Names({L"cover.bmp"})) == L"cover.bmp",
@@ -1325,7 +1160,6 @@ void TestSidecarSelection() {
             Names({L"cover.txt", L"front.png"})) == L"front.png",
         "sidecar: a rejected extension lets a valid lower-priority name win");
 
-  // (5) The ascent is bounded at 4 levels: level 4 is reached, level 5 is not.
   Check(SidecarLevels({{L"track.flac"}, {L"x"}, {L"x"}, {L"x"}, {L"cover.jpg"}}) == 4,
         "sidecar: an image four levels up is found");
   Check(SidecarLevels({{L"track.flac"}, {L"x"}, {L"x"}, {L"x"}, {L"x"}, {L"cover.jpg"}}) ==
@@ -1333,15 +1167,12 @@ void TestSidecarSelection() {
         "sidecar: an image five levels up is not found");
   Check(LocalArt::kMaxSidecarLevels == 4, "sidecar: the ascent bound is four levels");
 
-  // (6) First hit wins: the track folder beats an ancestor.
   Check(SidecarLevels({{L"cover.png"}, {L"cover.jpg"}}) == 0,
         "sidecar: the track folder wins over an ancestor");
   Check(PickNameAtLevel({{L"cover.png"}, {L"cover.jpg"}}, 0) == L"cover.png" &&
             PickNameAtLevel({{L"cover.png"}, {L"cover.jpg"}}, 1) == L"cover.jpg",
         "sidecar: each level is judged on its own entries");
 
-  // (7) No image anywhere in range -> empty, so the caller falls through to the
-  // online rung, which may still supply an image.
   Check(SidecarLevels({{L"a.flac"}, {L"b.flac"}, {L"c.flac"}, {L"d.flac"},
                        {L"cover.txt"}}) == -1,
         "sidecar: no image in range yields nothing");
@@ -1350,11 +1181,6 @@ void TestSidecarSelection() {
   Check(LocalArt::PickBestSidecarName(std::vector<std::wstring>()).empty(),
         "sidecar: an empty directory yields nothing");
 
-  // (8) The pure SDK path is untouched: a result with no sidecar names the sdk
-  // source, and the caller keeps the SDK bytes when both are present. This is
-  // asserted through the selection helpers above (the sidecar succeeds or not)
-  // plus the existing chain tests, which never see a sidecar. The extraction
-  // function itself is not invoked here because it needs an AIMP service.
   LocalArt::Result sdk_only;
   Check(!sdk_only.found && sdk_only.sha256_hex.empty(),
         "sidecar regression: a default SDK result carries no sidecar bytes");
@@ -1415,15 +1241,6 @@ void TestCache(const std::wstring& directory) {
   RemoveDirectoryW(directory.c_str());
 }
 
-//
-// A cache hit on a keyless URL is never trusted blindly. With the Drive host
-// active the local bytes are re-published there and the cache is updated;
-// without Drive credentials the stored URL is revalidated and a dead entry
-// falls through to a fresh keyless upload. A legacy GitHub URL (from the
-// removed host) is never reused: it upgrades to Drive when active, else it
-// revalidates like an ephemeral URL. The planning is pure, so it is asserted
-// here; the network legs (Drive upload, health-check GET, fresh upload) are
-// the existing proven transports.
 
 void TestCachedUrlPlan() {
   const std::string uguu_url = "https://n.uguu.se/nUoxUKCo.png";
@@ -1434,7 +1251,6 @@ void TestCachedUrlPlan() {
       "https://raw.githubusercontent.com/nathwn12/aimp-discord-presence-art/main/covers/" +
       legacy_name + ".jpg";
 
-  // Every keyless host's URL is ephemeral, whatever the subdomain or extension.
   Check(IsEphemeralCachedUrl(uguu_url), "plan: a uguu url is ephemeral");
   Check(IsEphemeralCachedUrl("https://h.uguu.se/yHYDFJRh.jpg"),
         "plan: a uguu url on another subdomain is ephemeral");
@@ -1445,7 +1261,6 @@ void TestCachedUrlPlan() {
   Check(!IsLegacyGitHubCachedUrl(uguu_url), "plan: a uguu url is not legacy");
   Check(!LooksLikeUploadUrl(legacy_url), "plan: the legacy url is not a fresh upload url");
 
-  // With Drive active, every ephemeral or legacy hit is upgraded.
   Check(PlanCachedUrl(uguu_url, true) == CachedUrlAction::kUpgradeToPermanent,
         "plan: uguu hit + drive -> re-publish to drive");
   Check(PlanCachedUrl(catbox_url, true) == CachedUrlAction::kUpgradeToPermanent,
@@ -1455,7 +1270,6 @@ void TestCachedUrlPlan() {
   Check(PlanCachedUrl(legacy_url, true) == CachedUrlAction::kUpgradeToPermanent,
         "plan: legacy hit + drive -> re-publish to drive, never reused");
 
-  // Without Drive, an ephemeral or legacy hit is revalidated, never trusted.
   Check(PlanCachedUrl(uguu_url, false) == CachedUrlAction::kRevalidate,
         "plan: uguu hit, no drive -> revalidate");
   Check(PlanCachedUrl(catbox_url, false) == CachedUrlAction::kRevalidate,
@@ -1465,8 +1279,6 @@ void TestCachedUrlPlan() {
   Check(PlanCachedUrl(legacy_url, false) == CachedUrlAction::kRevalidate,
         "plan: legacy hit, no drive -> revalidate, never reused");
 
-  // The active flag mirrors the host list: a legacy token changes nothing, and
-  // only Drive credentials flip the decision.
   CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   CoverPublisher::ConfigureDrive("", "", "");
   CoverPublisher::ConfigureHost("auto");
@@ -1491,12 +1303,8 @@ void TestCachedUrlPlan() {
   Check(!DriveUploadActive(), "plan: no credentials -> drive inactive");
 }
 
-//
-// All of this is pure or file-local: no test here performs a network call, and
-// none needs OAuth credentials.
 
 void TestDrivePkce() {
-  // RFC 7636 appendix B, the published S256 vector.
   Check(PkceCodeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") ==
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
         "pkce: the RFC 7636 S256 test vector matches");
@@ -1574,7 +1382,6 @@ void TestDriveTokenState(const std::wstring& directory) {
             text.find("client_secret") == std::string::npos,
         "drive state: only the refresh token and folder id are ever written");
 
-  // The real reader and writer, in the test's own scratch directory.
   CreateDirectoryW(directory.c_str(), nullptr);
   const std::wstring path = directory + L"\\drive-token.txt";
   DeleteFileW(path.c_str());
@@ -1763,8 +1570,6 @@ void TestCoverHostSelection() {
     Check(plan.drive == row.want_drive, std::string("policy: ") + row.label);
   }
 
-  // The live chain, through the same configuration the plugin uses. A legacy
-  // token is configured throughout: it must change nothing.
   CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
   CoverPublisher::ConfigureHost("keyless");
@@ -1841,11 +1646,9 @@ void TestDrivePermissionClassification() {
 
 
 void TestCacheUpgradePolicy() {
-  // keyless must never reach Drive, whatever the credentials.
   const std::vector<PermanentHost> keyless = PlanCacheUpgrade(CoverHostPolicy::kKeyless, true);
   Check(keyless.empty(), "upgrade policy: keyless selects no permanent host at all");
 
-  // auto with Drive credentials yields Drive; without them there is no upgrade.
   const std::vector<PermanentHost> auto_drive = PlanCacheUpgrade(CoverHostPolicy::kAuto, true);
   Check(auto_drive.size() == 1 && auto_drive[0] == PermanentHost::kDrive,
         "upgrade policy: auto + Drive creds upgrades to Drive");
@@ -1853,7 +1656,6 @@ void TestCacheUpgradePolicy() {
   Check(PlanCacheUpgrade(CoverHostPolicy::kAuto, false).empty(),
         "upgrade policy: auto with no credentials offers no upgrade");
 
-  // A legacy github pin reads as auto, so it upgrades exactly like auto.
   const std::vector<PermanentHost> legacy = PlanCacheUpgrade(ParseCoverHostPolicy("github"), true);
   Check(legacy.size() == 1 && legacy[0] == PermanentHost::kDrive,
         "upgrade policy: a legacy github pin upgrades to Drive like auto");
@@ -1865,16 +1667,12 @@ void TestCacheUpgradePolicy() {
   Check(PlanCacheUpgrade(CoverHostPolicy::kDrive, false).empty(),
         "upgrade policy: drive pinned without credentials offers no upgrade");
 
-  // The cache action follows the same decision: keyless revalidates instead of
-  // uploading anywhere, and any permanent host upgrades.
   const std::string ephemeral = "https://n.uguu.se/nUoxUKCo.png";
   Check(PlanCachedUrl(ephemeral, !keyless.empty()) == CachedUrlAction::kRevalidate,
         "upgrade policy: a keyless policy revalidates an ephemeral hit");
   Check(PlanCachedUrl(ephemeral, !auto_drive.empty()) == CachedUrlAction::kUpgradeToPermanent,
         "upgrade policy: auto + Drive upgrades an ephemeral hit");
 
-  // The same decision through the live configuration the plugin uses. A legacy
-  // token rides along: it must change nothing.
   CoverPublisher::ConfigureAuth("test-token", "owner/repo");
   CoverPublisher::ConfigureDrive("client-id", "client-secret", "C:\\temp\\drive-token.txt");
   CoverPublisher::ConfigureHost("keyless");
@@ -1894,13 +1692,11 @@ void TestCacheUpgradePolicy() {
 
 
 void TestConsentDeadline() {
-  // Remaining time never goes negative.
   Check(RemainingMillis(1000, 250) == 750, "deadline: the remaining budget is exact");
   Check(RemainingMillis(1000, 999) == 1, "deadline: the last millisecond remains a millisecond");
   Check(RemainingMillis(1000, 1000) == 0, "deadline: nothing remains at the deadline");
   Check(RemainingMillis(1000, 5000) == 0, "deadline: nothing remains past the deadline");
 
-  // A blocking receive can never outlive the deadline, however small the cap.
   Check(ReceiveSliceMillis(1000, 0, 2000) == 1000,
         "deadline: a slice is clamped to what remains");
   Check(ReceiveSliceMillis(10000, 0, 2000) == 2000,
@@ -1913,7 +1709,6 @@ void TestConsentDeadline() {
         "deadline: nothing blocks past the deadline");
   Check(ReceiveSliceMillis(1000, 0, 0) == 0, "deadline: a zero cap never blocks");
 
-  // The budgets fit inside the window, so no receive can extend it.
   Check(kDriveConsentWindowMs <= 300000, "deadline: the consent window stays at five minutes or less");
   Check(kDriveReceiveTimeoutMs <= kDriveConsentWindowMs,
         "deadline: a receive budget cannot outlast the window");
@@ -1925,12 +1720,6 @@ void TestConsentDeadline() {
         "deadline: a fresh deadline is exactly the window away");
 }
 
-//
-// The live defect: with CoverHost=drive and valid credentials the log carried no
-// drive line at all, because the cache-hit path never reached the chain (the old
-// upgrade leg only knew GitHub, and its predicate tested credentials rather than
-// chain membership). This line makes the configured chain, and the reason a host
-// is absent, sayable in one log record.
 
 void TestHostConfigLine() {
   HostConfigSummary auto_all;
@@ -1967,7 +1756,6 @@ void TestHostConfigLine() {
             "local-cover hosts policy=auto drive=off drive-reason=no-state-path keyless=on",
         "host line: an unusable sidecar path is named");
 
-  // Reason tokens come from booleans only, so no configured value can leak.
   Check(DriveUnavailableReason(false, false, false) == "no-credentials",
         "host line: both Drive credentials missing -> no-credentials");
   Check(DriveUnavailableReason(true, false, true) == "no-client-secret",
@@ -1985,9 +1773,6 @@ void TestHostConfigLine() {
   Check(ParseCoverHostPolicy("github") == CoverHostPolicy::kAuto,
         "host line: the legacy github value has no policy name of its own");
 
-  // The live shape: the publisher reports the same line through EmitLog, and a
-  // secret set for the host never appears anywhere in it. A legacy token rides
-  // along and must not appear either.
   CoverPublisher::SetLogger(&CaptureLog);
   g_log_lines.clear();
   CoverPublisher::ConfigureDrive("client-id-value", "GOCSPX-secret-value", "C:\\temp\\state.txt");
@@ -2037,8 +1822,6 @@ void TestCacheHitHost(const std::wstring& directory) {
         "cache host: an unknown url names nothing");
   Check(HostNameForUrl("").empty(), "cache host: an empty url names nothing");
 
-  // The cache hit itself must carry the name: an empty Result.host is what the
-  // plugin logged as "host=unknown" on a hit-revalidated publish.
   CreateDirectoryW(directory.c_str(), nullptr);
   const std::wstring path = directory + L"\\host-cache.txt";
   DeleteFileW(path.c_str());
@@ -2058,11 +1841,6 @@ void TestCacheHitHost(const std::wstring& directory) {
   RemoveDirectoryW(directory.c_str());
 }
 
-//
-// When a cached legacy GitHub URL is re-published (Drive active) the cache
-// entry must be replaced with the new URL: left in place, every play would
-// re-upload. A stored normal entry, though, is never clobbered by a later
-// failure - the good URL stays until a new URL replaces it.
 
 void TestLegacyCacheEntryReplaced(const std::wstring& directory) {
   CreateDirectoryW(directory.c_str(), nullptr);
@@ -2085,7 +1863,6 @@ void TestLegacyCacheEntryReplaced(const std::wstring& directory) {
   Check(CacheLookup(key, now, &hit) && hit.ok && hit.url == legacy_url,
         "legacy replace: the legacy entry is stored and served back");
 
-  // The upgrade's new URL replaces the legacy entry in place.
   Result upgraded;
   upgraded.ok = true;
   upgraded.url = drive_url;
@@ -2097,8 +1874,6 @@ void TestLegacyCacheEntryReplaced(const std::wstring& directory) {
   Check(PlanCachedUrl(hit.url, true) == CachedUrlAction::kUse,
         "legacy replace: the new url is reused, so the next play never re-uploads");
 
-  // A normal stored entry survives a later failure: failures never clobber a
-  // good URL.
   const std::string other = Sha256Hex(std::vector<unsigned char>{'k', 'e', 'p', 't'});
   CacheStore(other, upgraded, now);
   Result failed;
@@ -2116,9 +1891,6 @@ void TestLegacyCacheEntryReplaced(const std::wstring& directory) {
 void TestConsentWaitDecision() {
   const long long deadline = 120000;  // an absolute budget in milliseconds
 
-  // (a) A run of select() timeouts never ends the wait. This is the regression
-  // that collapsed the window to ~500 ms: two 250 ms poll ticks were counted as
-  // accepted connections.
   bool kept_waiting = true;
   for (long long now = 0; now < deadline; now += static_cast<long long>(kDriveConsentPollMs)) {
     kept_waiting = kept_waiting &&
@@ -2128,13 +1900,11 @@ void TestConsentWaitDecision() {
   Check(deadline / static_cast<long long>(kDriveConsentPollMs) > 100,
         "consent wait: the window spans many poll ticks, so a tick must not consume it");
 
-  // (b) The absolute deadline ends it, ready socket or not.
   Check(DecideConsentStep(0, false, deadline, deadline) == ConsentStep::kExpired,
         "consent wait: the deadline ends an idle wait");
   Check(DecideConsentStep(1, false, deadline + 1, deadline) == ConsentStep::kExpired,
         "consent wait: the deadline ends the wait even with a ready socket");
 
-  // (c) Cancellation ends it immediately, and outranks the deadline.
   Check(DecideConsentStep(0, true, 0, deadline) == ConsentStep::kCancelled,
         "consent wait: cancellation ends an idle wait");
   Check(DecideConsentStep(1, true, 0, deadline) == ConsentStep::kCancelled,
@@ -2142,7 +1912,6 @@ void TestConsentWaitDecision() {
   Check(DecideConsentStep(1, true, deadline, deadline) == ConsentStep::kCancelled,
         "consent wait: cancellation outranks the deadline");
 
-  // (d) A ready socket proceeds to accept; a select error does not.
   Check(DecideConsentStep(1, false, 0, deadline) == ConsentStep::kAccept,
         "consent wait: a ready socket proceeds to accept");
   Check(DecideConsentStep(3, false, deadline - 1, deadline) == ConsentStep::kAccept,
@@ -2168,8 +1937,6 @@ void TestConsentErrorToken() {
         "consent error: any other Google code becomes error");
   Check(ConsentErrorToken("") == "error", "consent error: an empty value becomes error");
 
-  // Anything a crafted callback can carry - newlines, quotes, a token-shaped
-  // string - must map to a fixed token and never reach the log.
   const char* hostile[] = {
       "access_denied\r\nlocal-cover published host=evil url=https://evil.test/x.jpg",
       "access_denied\ntext after a bare newline",
@@ -2195,15 +1962,6 @@ void TestConsentErrorToken() {
   }
 }
 
-//
-// A NEW track's card is held until its cover resolves, a definitive miss
-// settles, or the adaptive monotonic deadline, then published once. Empty
-// file info is never published. Pure and headless: monotonic time is injected,
-// so the whole sequence runs offline.
-//
-// Tick honesty: AIMP's position tick fires every 1 s and the plugin only
-// re-evaluates the gate there, so every deadline below is a target evaluated
-// on the next tick (up to 1 s late), not an exact millisecond expiry.
 void TestPresenceUpdateGate() {
   using Decision = PresenceUpdateGate::Decision;
 
@@ -2212,14 +1970,12 @@ void TestPresenceUpdateGate() {
   Check(PresenceUpdateGate::kMinHoldMs == 1000, "gate: the learned floor is 1 s");
   Check(PresenceUpdateGate::kRapidSkipHoldMs == 1000, "gate: rapid skip targets 1 s");
 
-  // Empty file info is never published (the "AIMP" fallback card).
   PresenceUpdateGate gate;
   Check(gate.OnTrack("Daft Punk\nDiscovery\nOne More Time", true, false, 0) ==
             Decision::Skip,
         "gate: empty info -> Skip");
   Check(!gate.HasPending(), "gate: Skip holds nothing");
 
-  // A NEW track with no cover is held, not sent (default 1.5 s budget).
   const std::string track_a = "Daft Punk\nDiscovery\nOne More Time";
   Check(gate.OnTrack(track_a, false, false, 0) == Decision::Hold,
         "gate: new track no cover -> Hold");
@@ -2228,16 +1984,12 @@ void TestPresenceUpdateGate() {
   Check(gate.deadline_ms() == 1500,
         "gate: the deadline is start + default budget");
   Check(!gate.artwork_ready(), "gate: a held track starts not artwork-ready");
-  // 1 s tick before the 1.5 s target still holds.
   Check(gate.OnTick(1000) == Decision::Hold, "gate: 1 s tick before deadline holds");
 
-  // Cover resolved by the worker at 0.4 s is discovered on the 1 s tick.
   Check(gate.OnArtworkReady(1000) == Decision::Send, "gate: artwork ready -> Send");
   Check(!gate.HasPending(), "gate: artwork Send clears pending");
   Check(gate.artwork_ready(), "gate: the artwork-ready flag is set on release");
 
-  // A NEW track with no cover at all is published on the first tick at or
-  // after the target (here 3.5 s target sends on the 4 s tick, 0.5 s late).
   PresenceUpdateGate gate_deadline;
   const std::string track_b = "Daft Punk\nHomework\nAround the World";
   Check(gate_deadline.OnTrack(track_b, false, false, 2000) == Decision::Hold,
@@ -2248,19 +2000,16 @@ void TestPresenceUpdateGate() {
         "gate: first tick at/after target Sends (tick-late)");
   Check(!gate_deadline.HasPending(), "gate: deadline Send clears pending");
 
-  // A NEW track whose cover is already cached sends immediately, never holds.
   PresenceUpdateGate gate_cached;
   const std::string track_c = "ZWE1HVNDXR\nLOVELY BASTARDS\nLOVELY BASTARDS";
   Check(gate_cached.OnTrack(track_c, false, true, 5000) == Decision::Send,
         "gate: cached cover -> Send immediately");
   Check(!gate_cached.HasPending(), "gate: cached Send holds nothing");
 
-  // A same-track update always sends, even with no cover ready.
   Check(gate_cached.OnTrack(track_c, false, false, 6000) == Decision::Send,
         "gate: same-track update -> Send");
   Check(!gate_cached.HasPending(), "gate: same-track Send holds nothing");
 
-  // A held same-track poll carrying artwork-ready also releases.
   PresenceUpdateGate gate_same;
   Check(gate_same.OnTrack(track_a, false, false, 7000) == Decision::Hold,
         "gate: new track holds again");
@@ -2268,23 +2017,15 @@ void TestPresenceUpdateGate() {
         "gate: same track artwork ready -> Send");
   Check(!gate_same.HasPending(), "gate: same-track artwork Send clears pending");
 
-  // Stop/pause-clear resets the gate: the next track holds as new again.
-  // Samples survive the reset (learning crosses stops).
   gate_same.Reset();
   Check(!gate_same.HasPending(), "gate: Reset clears pending");
   Check(gate_same.OnTrack(track_a, false, false, 9000) == Decision::Hold,
         "gate: after Reset a new track holds again");
 }
 
-//
-// Fake-clock proof for the learned wait: clamp(2 x median of last 8
-// track-start-to-cover samples, 1000, 3000), default 1500, rapid-skip target
-// 1000. All waits are tick targets: the plugin polls on 1 s ticks, so a Send
-// lands on the first tick at or after the target.
 void TestPresenceUpdateGateAdaptive() {
   using Decision = PresenceUpdateGate::Decision;
 
-  // No history -> 1500 ms target.
   {
     PresenceUpdateGate gate;
     Check(gate.PredictedBudgetMs(0) == 1500, "adaptive: no history -> 1500");
@@ -2295,8 +2036,6 @@ void TestPresenceUpdateGateAdaptive() {
     Check(gate.OnTick(2000) == Decision::Send, "adaptive: 2 s tick sends (0.5 s late)");
   }
 
-  // Fast samples -> short floor of 1000 ms. Spacing exceeds the rapid
-  // threshold so only history shapes the budget.
   {
     PresenceUpdateGate gate;
     for (int i = 0; i < 4; ++i) {
@@ -2316,8 +2055,6 @@ void TestPresenceUpdateGateAdaptive() {
     Check(gate.OnTick(9000) == Decision::Send, "adaptive: fast target sends on next tick");
   }
 
-  // Slow samples -> capped at 3000 ms. Late covers (after the deadline Send)
-  // still teach via NoteLateCover.
   {
     PresenceUpdateGate gate;
     for (int i = 0; i < 8; ++i) {
@@ -2325,7 +2062,6 @@ void TestPresenceUpdateGateAdaptive() {
       const std::string key = "slow-" + std::to_string(i);
       Check(gate.OnTrack(key, false, false, start) == Decision::Hold,
             "adaptive: slow history holds");
-      // Let the target pass, then learn the late 1500 ms cover.
       const uint64_t deadline = gate.deadline_ms();
       Check(gate.OnTick(deadline) == Decision::Send,
             "adaptive: slow target sends placeholder");
@@ -2344,7 +2080,6 @@ void TestPresenceUpdateGateAdaptive() {
     Check(gate.OnTick(35000) == Decision::Send, "adaptive: 3 s tick sends");
   }
 
-  // Cached/ready cover -> immediate, learns nothing.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("cached", false, true, 0) == Decision::Send,
@@ -2353,7 +2088,6 @@ void TestPresenceUpdateGateAdaptive() {
     Check(gate.sample_count() == 0, "adaptive: cached records no sample");
   }
 
-  // No cover source pending (art disabled / no local and online off) -> immediate.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("no-source", false, false, 0, false) == Decision::Send,
@@ -2362,7 +2096,6 @@ void TestPresenceUpdateGateAdaptive() {
     Check(gate.OnTick(1000) == Decision::Send, "adaptive: no-source 1 s tick sends");
   }
 
-  // Definitive miss while held -> immediate, learns nothing.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("miss", false, false, 0) == Decision::Hold,
@@ -2373,7 +2106,6 @@ void TestPresenceUpdateGateAdaptive() {
     Check(gate.sample_count() == 0, "adaptive: miss records no sample");
   }
 
-  // Rapid skip (previous track under 1.5 s) -> 1000 ms target.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("prev", false, false, 0) == Decision::Hold,
@@ -2388,13 +2120,9 @@ void TestPresenceUpdateGateAdaptive() {
   }
 }
 
-//
-// The verdict's five cases, each driven on 1 s ticks: the budget is met on the
-// first tick at or after the target.
 void TestPresenceUpdateGateTicks() {
   using Decision = PresenceUpdateGate::Decision;
 
-  // Cover resolved by the worker at 0.4 s is discovered on the 1 s tick.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("tick-cover-early", false, false, 0) == Decision::Hold,
@@ -2403,7 +2131,6 @@ void TestPresenceUpdateGateTicks() {
           "ticks: cover at 0.4 s -> 1 s tick sends with cover");
   }
 
-  // Cover at 1.4 s with a 1500 ms budget: 1 s tick holds, 2 s tick sends.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("tick-cover-late", false, false, 0) == Decision::Hold,
@@ -2413,7 +2140,6 @@ void TestPresenceUpdateGateTicks() {
           "ticks: cover at 1.4 s -> 2 s tick sends with cover");
   }
 
-  // No cover source pending: immediate Send, 1 s tick stays sent.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("tick-no-source", false, false, 0, false) == Decision::Send,
@@ -2421,7 +2147,6 @@ void TestPresenceUpdateGateTicks() {
     Check(gate.OnTick(1000) == Decision::Send, "ticks: no source -> 1 s Send");
   }
 
-  // Slow cover history learns the 3000 ms cap: 1 s and 2 s ticks hold, 3 s sends.
   {
     PresenceUpdateGate gate;
     for (int i = 0; i < 8; ++i) {
@@ -2441,7 +2166,6 @@ void TestPresenceUpdateGateTicks() {
     Check(gate.OnTick(43000) == Decision::Send, "ticks: slow cover budget 3000 -> 3 s Send");
   }
 
-  // Rapid skip targets one tick.
   {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("tick-rapid-prev", false, false, 0) == Decision::Hold,
@@ -2452,16 +2176,10 @@ void TestPresenceUpdateGateTicks() {
   }
 }
 
-//
-// A cover that completes between the artwork poll and the pending-source check
-// must hold, never send the placeholder as a miss. Pure headless proof for the
-// CoverSourcePending decision plus the gate Hold/Release it drives.
 void TestPresenceUpdateGateRace() {
   using Decision = PresenceUpdateGate::Decision;
   using State = PresenceUpdateGate::CoverSourceState;
 
-  // Local result ready but not yet applied -> pending: hold, do not misread as
-  // a miss. This is the exact window the verdict names.
   {
     State state;
     state.local_result_pending = true;
@@ -2470,13 +2188,11 @@ void TestPresenceUpdateGateRace() {
     PresenceUpdateGate gate;
     Check(gate.OnTrack("race-local", false, false, 0) == Decision::Hold,
           "race: local held at 0");
-    // The 1 s tick still has a source: hold, not a definitive miss.
     Check(gate.OnTick(1000) == Decision::Hold, "race: local ready -> Hold");
     Check(gate.OnArtworkReady(1000) == Decision::Send,
           "race: local applied -> Send with cover");
   }
 
-  // Online cover arrived but not yet applied -> pending: hold.
   {
     State state;
     state.online_requested = true;
@@ -2490,7 +2206,6 @@ void TestPresenceUpdateGateRace() {
     Check(gate.OnTick(1000) == Decision::Hold, "race: online arrived -> Hold");
   }
 
-  // Online empty arrived (matching key, empty URL) -> definitive miss: release.
   {
     State state;
     state.online_requested = true;
@@ -2505,8 +2220,6 @@ void TestPresenceUpdateGateRace() {
           "race: online empty -> miss/release");
   }
 
-  // Applied cover (real image already on the card) -> not pending, even with a
-  // matching non-empty online answer still recorded.
   {
     State state;
     state.online_requested = true;

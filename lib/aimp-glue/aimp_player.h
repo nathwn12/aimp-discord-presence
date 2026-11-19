@@ -1,8 +1,3 @@
-//  In-repo replacement for the retired aimp-sdk-cpp-wrapper facade.
-//
-//  Aimp::Player::Service::Player is a thin, reference counted handle over
-//  IAIMPServicePlayer. It queries the service for the duration of a single
-//  call site and releases it again, as recommended by the AIMP SDK.
 
 #ifndef AIMP_GLUE_AIMP_PLAYER_H_
 #define AIMP_GLUE_AIMP_PLAYER_H_

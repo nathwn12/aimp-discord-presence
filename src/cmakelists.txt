@@ -41,8 +41,6 @@ file( GLOB SOURCE_FILES
   *.def
 )
 
-# In-repo glue over the official AIMP SDK headers; replaces the retired
-# lib/aimp-sdk-cpp-wrapper submodule.
 list( APPEND SOURCE_FILES
   ${LIB_DIR}/aimp-glue/aimp_glue.cpp
 )

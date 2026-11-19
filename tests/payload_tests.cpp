@@ -1,10 +1,3 @@
-// Offline unit tests for the Discord activity JSON builder
-// (src/discord_ipc.cpp): the `name` and `buttons` fields, Discord's documented
-// length limits, and the wire shape of the fields that already existed.
-//
-// No third-party framework and no network. Built by CMake as `payload_tests`
-// and registered with CTest; run the whole suite with:
-//   ctest --test-dir build -C Release --output-on-failure
 
 #include "../src/discord_ipc.h"
 #include "../src/presence_layout.h"
@@ -27,9 +20,6 @@ void Check(bool condition, const std::string& label) {
   }
 }
 
-//
-// The builder emits flat objects and strings only, so a real parser would be
-// more machinery than the assertions need.
 
 bool HasField(const std::string& json, const std::string& key) {
   return json.find("\"" + key + "\":") != std::string::npos;
@@ -49,7 +39,6 @@ std::string FieldValue(const std::string& json, const std::string& key) {
   return json.substr(value_start, end - value_start);
 }
 
-// Text of the `buttons` array, or an empty string when the field is absent.
 std::string ButtonsJson(const std::string& json) {
   const std::string token = "\"buttons\":[";
   const size_t start = json.find(token);
@@ -193,8 +182,6 @@ void TestButtonWithEmptyUrlOmitted() {
         "the remaining button is emitted");
 }
 
-// Both slots empty must omit the field entirely: `"buttons":[]` is not the
-// same wire shape as an absent key, and Discord rejects the empty array.
 void TestButtonsKeyAbsentWhenBothUrlsEmpty() {
   DiscordIpc::Activity activity;
   activity.buttons[0].label = "Listen on Spotify";
@@ -207,8 +194,6 @@ void TestButtonsKeyAbsentWhenBothUrlsEmpty() {
         "the buttons token is absent from the payload");
 }
 
-// The positive counterpart: one non-empty url yields exactly one object, and
-// the array closes right after it with no trailing comma.
 void TestSingleButtonArrayShape() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
   activity.buttons[0].url.clear();
@@ -274,9 +259,6 @@ void TestUrlTruncatedTo512() {
 
 void TestUtf8TruncationDoesNotSplitCharacter() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
-  // 31 ASCII characters, then a 5-character CJK word: codepoint 32 is the
-  // first byte of a 3-byte sequence, the exact boundary that a byte-wise
-  // truncation would corrupt.
   const std::string cjk = "\xE5\x90\x9B\xE3\x81\xA8\xE3\x81\x84\xE3\x81\x86"
                           "\xE8\x8A\xB1";
   activity.buttons[0].label = std::string(31, 'a') + cjk;
@@ -319,7 +301,6 @@ void TestExistingFieldsUnchanged() {
         "large_text is emitted when set");
 }
 
-// The fixture quoted in the ticket's wire-shape report.
 std::string BuildWireFixture() {
   DiscordIpc::Activity activity = DefaultButtonsActivity();
   activity.type = 2;
@@ -544,8 +525,6 @@ void TestShouldSendNow() {
 }
 
 void TestNormalizeThrottleMs() {
-  // Exactly 0 disables the limit; anything else below the 1000 ms floor is
-  // clamped up to it, so a negative ThrottleMs can never disable the cap.
   struct Case {
     int configured;
     uint32_t expected;
@@ -567,12 +546,6 @@ void TestNormalizeThrottleMs() {
   }
 }
 
-//
-// The throttle worker is the only thread that calls into the Discord client.
-// These checks model the revision/interval decisions it makes, including the
-// two orderings that used to be bugs: a clear that arrives while a send is in
-// flight, and newer state that arrives while the worker waits for a deadline.
-// The plan is pure, so the checks need no client, no clock and no threads.
 
 PresenceThrottlePlan::Request PlanRequest(bool valid, uint64_t desired_revision,
                                           uint64_t published_revision,
@@ -598,8 +571,6 @@ void TestThrottlePlanIdleAfterPublish() {
 
   Check(Decide(PlanRequest(true, 7, 7, 4000), 5000, 4000).action == Action::kIdle,
         "a published card leaves the worker idle");
-  // Idle is about revisions, not about whether the published state was a card
-  // or a clear: a published clear must not be repeated every interval.
   Check(Decide(PlanRequest(false, 7, 7, 0), 5000, 4000).action == Action::kIdle,
         "a published clear leaves the worker idle");
 }
@@ -619,35 +590,24 @@ void TestThrottlePlanWaitsForTheInterval() {
         "the deadline sends the latest state");
 }
 
-// The B3 hole, as a state sequence: the worker has chosen a send and released
-// the lock to perform it; a stop arrives before the call returns.
 void TestThrottlePlanClearBeatsInFlightSend() {
   using namespace PresenceThrottlePlan;
 
-  // Revision 2 is chosen for sending at t=9000, with the gate open.
   const Request in_flight = PlanRequest(true, 2, 1, 5000);
   Check(Decide(in_flight, 9000, 4000).action == Action::kSend,
         "the revision chosen while the gate is open is sent");
 
-  // While that call is in flight the user stops: revision 3, invalid, and the
-  // clear request reset the gate. The completion then stores the gate it finds.
   const uint64_t gate_after_completion =
       GateAfterAction(Action::kSend, 5000, 0, 9000);
   Check(gate_after_completion == 0,
         "a send completing after a clear leaves the clear's reset gate intact");
 
-  // Because the clear bumped the revision, the next decision is the clear
-  // itself: not a wait, and not the stale send again.
   const Decision next = Decide(
       PlanRequest(false, 3, 2, gate_after_completion), 9001, 4000);
   Check(next.action == Action::kClear,
         "a clear that arrived during a send is issued on the next iteration");
   Check(next.wait_ms == 0, "the clear is not held behind the superseded send");
 
-  // Counterfactual kept as a regression guard: if the completion had overwritten
-  // the reset, the same state would carry a full interval on the gate. Clears are
-  // ungated, so the clear is still issued at once - which is exactly why the
-  // clear path no longer depends on the gate preservation above.
   Check(Decide(PlanRequest(false, 3, 2, 9000), 9001, 4000).action == Action::kClear,
         "a clear survives an overwritten reset, because a clear ignores the gate");
 }
@@ -659,14 +619,10 @@ void TestThrottlePlanNewerStateReplacesPendingWait() {
   Check(waiting.action == Action::kWait && waiting.wait_ms == 3000,
         "the worker waits out the interval for a pending card");
 
-  // A new track bumps the revision during that wait. The remaining time is
-  // measured from the current gate, never carried over from the old wait.
   const Decision replaced = Decide(PlanRequest(true, 3, 1, 5000), 6100, 4000);
   Check(replaced.action == Action::kWait && replaced.wait_ms == 2900,
         "newer state is measured against the gate, not the previous wait");
 
-  // At the deadline the decision sends; the desired snapshot is read from the
-  // shared state at that moment, so it is revision 3 that goes out.
   Check(Decide(PlanRequest(true, 3, 1, 5000), 9000, 4000).action == Action::kSend,
         "the deadline sends the newest state, not the first one queued");
 }
@@ -677,16 +633,10 @@ void TestThrottlePlanClearDuringWaitIsImmediate() {
   Check(Decide(PlanRequest(true, 2, 1, 5000), 6000, 4000).action == Action::kWait,
         "a pending card is waiting for its deadline");
 
-  // A stop resets the gate as part of the clear request, so the clear does not
-  // inherit the wait that belonged to the card.
   Check(Decide(PlanRequest(false, 3, 1, 0), 6010, 4000).action == Action::kClear,
         "a clear during a pending wait is published without waiting");
 }
 
-// B5: a clear is a terminal state change. It cannot be coalesced into a later
-// send, so the interval - which exists to stop track-change churn - gates a
-// send only. The two decisions below share every input except `desired_valid`,
-// which isolates the gate as the cause: the card waits, the clear does not.
 void TestThrottlePlanClearIgnoresFreshGate() {
   using namespace PresenceThrottlePlan;
 
@@ -700,12 +650,6 @@ void TestThrottlePlanClearIgnoresFreshGate() {
   Check(clear.wait_ms == 0, "a clear is returned with no wait at all");
 }
 
-// B5, the verifier's exact sequence. The gate is 0 because nothing has been
-// sent yet; a send is chosen and released to the client; a clear arrives while
-// that call is in flight and resets the gate to 0. The reset is invisible to
-// GateAfterAction - 0 and 0 compare equal - so the completion stamps the send's
-// own time. Under the old policy that stamp put the clear behind a full
-// interval; clears are ungated now, so the clear still goes out 1 ms later.
 void TestThrottlePlanClearAfterZeroGateReset() {
   using namespace PresenceThrottlePlan;
 
@@ -725,8 +669,6 @@ void TestThrottlePlanClearAfterZeroGateReset() {
         "the clear carries no wait even though the gate says 3999 ms remain");
 }
 
-// Ungated clears must not make a published clear repeat: revision equality is
-// still the first rule, so a clear that is already on screen is not re-sent.
 void TestThrottlePlanPublishedClearIsIdle() {
   using namespace PresenceThrottlePlan;
 
@@ -759,9 +701,6 @@ void TestThrottlePlanZeroIntervalSendsImmediately() {
   Check(decision.wait_ms == 0, "an immediate send carries no wait");
 }
 
-// A newer send replacing a pending send must not inherit the earlier card's
-// remaining wait: the decision is recomputed from the gate every time, and the
-// state read at the deadline is the latest one.
 void TestThrottlePlanNewerSendWinsDuringWait() {
   using namespace PresenceThrottlePlan;
 

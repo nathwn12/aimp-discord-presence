@@ -44,11 +44,6 @@ constexpr const char* kCoverArtArchiveHost = "coverartarchive.org";
 constexpr const char* kDiscogsHost = "api.discogs.com";
 constexpr const char* kWikipediaHost = "en.wikipedia.org";
 
-// MusicBrainz allows one request per second per client; the gate is set a
-// little above that so clock granularity cannot drift it below the limit.
-// Discogs allows 60 requests per minute unauthenticated, so it gets the same
-// gate and Tier 2 never spends that budget on the hot path (Tier 1 runs
-// first and Tier 2 only runs when both Tier 1 providers miss).
 constexpr int kMusicBrainzIntervalMilliseconds = 1100;
 constexpr int kDiscogsIntervalMilliseconds = 1100;
 
@@ -108,8 +103,6 @@ int HexValue(char value) {
   return -1;
 }
 
-// Reads a JSON string literal that starts right after the opening quote and
-// decodes its escapes.
 std::string DecodeJsonStringAt(const std::string& json, size_t position) {
   std::string decoded;
 
@@ -177,8 +170,6 @@ std::string DecodeJsonStringAt(const std::string& json, size_t position) {
   return decoded;
 }
 
-// Returns the first non-empty value for `key` that is an https URL within
-// Discord's length limit.
 std::string ExtractFirstUsableUrl(const std::string& body, const std::string& key) {
   const std::string needle = "\"" + key + "\"";
   size_t search_from = 0;
@@ -234,16 +225,6 @@ class WinHttpHandle {
   HINTERNET handle_;
 };
 
-// Fetches `url` and stores the response body in `body`. Returns true only when
-// a complete HTTP 200 response was received, so the caller can tell a
-// definitive provider answer (even an empty one) apart from a transport
-// failure, which must not be cached as "no artwork". Redirects are followed by
-// WinHTTP's default policy (https only), which the Cover Art Archive needs: its
-// size endpoints answer 307 toward the Internet Archive copy of the image.
-//
-// `user_agent` is sent as an additional header when non-empty; `status_code`
-// receives the HTTP status code, or 0 when no response was received at all, so
-// a caller can tell a 404 from a timeout.
 bool HttpGet(const std::string& url, std::string* body,
              const std::string& user_agent = std::string(),
              int* status_code = nullptr) {
@@ -292,8 +273,6 @@ bool HttpGet(const std::string& url, std::string* body,
     return false;
   }
 
-  // A descriptive User-Agent is mandatory for MusicBrainz and Discogs; the
-  // other providers use the session User-Agent.
   std::wstring header_block;
   if (!user_agent.empty()) {
     header_block = L"User-Agent: ";
@@ -347,8 +326,6 @@ bool HttpGet(const std::string& url, std::string* body,
     }
     result.append(buffer, 0, static_cast<size_t>(read));
     if (result.size() >= kMaxResponseBytes) {
-      // The artwork URL always appears early in these documents; a capped
-      // response is still a usable, definitive answer.
       complete = true;
       break;
     }
@@ -369,8 +346,6 @@ std::string BuildAlbumKey(const std::string& artist, const std::string& album,
   if (!album.empty()) {
     return artist + "\n" + album;
   }
-  // Album-less: artist + "\n" + album alone would collapse every untagged file
-  // by one artist into a single identity, so the file path discriminates.
   return artist + "\n\n" + file_path;
 }
 
@@ -422,7 +397,6 @@ std::string UpscaleItunesArtwork(const std::string& url) {
     return url;
   }
 
-  // Walk back over "<width>x<height>" to find the start of the size token.
   size_t start = marker;
   while (start > 0) {
     const char previous = url[start - 1];
@@ -442,10 +416,6 @@ std::string UpscaleItunesArtwork(const std::string& url) {
 
 namespace {
 
-// Normalizes a metadata string for the identity guard: ASCII letters are
-// lowercased and every run of other characters collapses to one space.
-// Non-ASCII bytes count as separators, so a guard check can only ever reject a
-// hit; it never accepts a wrong one on a technicality.
 std::string NormalizeForMatch(const std::string& text) {
   std::string normalized;
   normalized.reserve(text.size());
@@ -485,9 +455,6 @@ std::vector<std::string> SplitWords(const std::string& normalized) {
   return words;
 }
 
-// Reads the first hit's artist and album out of a search response. Only the
-// response shapes of the providers that are actually queried are handled; false
-// means the response carried no usable hit identity.
 bool ExtractSearchHitIdentity(const std::string& body, Provider provider,
                               std::string* hit_artist, std::string* hit_album) {
   if (body.empty()) {
@@ -495,7 +462,6 @@ bool ExtractSearchHitIdentity(const std::string& body, Provider provider,
   }
 
   if (provider == Provider::kDeezer) {
-    // {"data":[{"title":"...","artist":{"name":"..."}},...]}
     *hit_album = ExtractJsonStringField(body, "title");
     const size_t artist_key = body.find("\"artist\"");
     *hit_artist = artist_key == std::string::npos
@@ -505,16 +471,12 @@ bool ExtractSearchHitIdentity(const std::string& body, Provider provider,
   }
 
   if (provider == Provider::kItunes) {
-    // {"results":[{"artistName":"...","collectionName":"..."},...]}
     *hit_artist = ExtractJsonStringField(body, "artistName");
     *hit_album = ExtractJsonStringField(body, "collectionName");
     return !hit_artist->empty() && !hit_album->empty();
   }
 
   if (provider == Provider::kMusicBrainz) {
-    // Everything is read after the "release-groups" key: the document also
-    // nests releases[].id and artist-credit[].artist.id, so an "id" or "name"
-    // from the top of the document could belong to the wrong object.
     const size_t anchor = body.find("\"release-groups\"");
     if (anchor == std::string::npos) {
       return false;
@@ -529,7 +491,6 @@ bool ExtractSearchHitIdentity(const std::string& body, Provider provider,
   }
 
   if (provider == Provider::kMusicBrainzRelease) {
-    // {"releases":[{"title":"...","artist-credit":[{"name":"..."}]},...]}
     const size_t anchor = body.find("\"releases\"");
     if (anchor == std::string::npos) {
       return false;
@@ -546,8 +507,6 @@ bool ExtractSearchHitIdentity(const std::string& body, Provider provider,
   return false;
 }
 
-// A strict 8-4-4-4-12 hexadecimal UUID check, so a malformed MBID cannot inject
-// a path segment into the Cover Art Archive URL.
 bool IsUuid(const std::string& value) {
   if (value.size() != 36) {
     return false;
@@ -582,13 +541,6 @@ bool IsAllDigits(const std::string& value) {
 }  // namespace
 
 std::string BuildDeezerSearchUrl(const std::string& artist, const std::string& album) {
-  // Deezer retired the `artist:"..." album:"..."` advanced syntax: it now
-  // answers 200 with {"data":[],"total":0} (verified 2026-10-01). The plain
-  // free-text query returns the same album objects, including `cover_xl`, so
-  // the album endpoint is queried with free text and the light identity guard
-  // rejects the occasional wrong first hit.
-  // An album-less track has nothing to append, so the free-text query is the
-  // artist alone (with no trailing space).
   const std::string terms = album.empty() ? artist : artist + " " + album;
   std::string url = "https://";
   url += kDeezerHost;
@@ -600,8 +552,6 @@ std::string BuildDeezerSearchUrl(const std::string& artist, const std::string& a
 
 std::string BuildDeezerTrackSearchUrl(const std::string& artist,
                                       const std::string& track) {
-  // Strict field syntax for album-title resolution (verified 2026-11-04 in the
-  // keyless notes: plain `q=` ranking mis-ranks, e.g. Teardrop -> Sandstorm).
   if (artist.empty() || track.empty()) {
     return std::string();
   }
@@ -615,8 +565,6 @@ std::string BuildDeezerTrackSearchUrl(const std::string& artist,
 }
 
 std::string BuildItunesSearchUrl(const std::string& artist, const std::string& album) {
-  // An album-less track has nothing to append, so the free-text term is the
-  // artist alone (with no trailing space).
   const std::string terms = album.empty() ? artist : artist + " " + album;
   std::string url = "https://";
   url += kItunesHost;
@@ -628,9 +576,6 @@ std::string BuildItunesSearchUrl(const std::string& artist, const std::string& a
 
 std::string BuildItunesSongSearchUrl(const std::string& artist,
                                      const std::string& track) {
-  // Song search for album-title resolution (verified 2026-11-04: `entity=song`
-  // carries `trackName` + `collectionName`; album-only search mis-ranks, e.g.
-  // DSOTM -> a K-pop EP).
   if (artist.empty() || track.empty()) {
     return std::string();
   }
@@ -645,10 +590,6 @@ std::string BuildItunesSongSearchUrl(const std::string& artist,
 
 std::string BuildMusicBrainzReleaseGroupUrl(const std::string& artist,
                                             const std::string& album) {
-  // WS/2 search syntax ("artist:"..." AND releasegroup:"..."). The whole Lucene
-  // query is percent-encoded, so the %22 sequences carry the phrase quotes;
-  // backslashes and quotes inside a term are escaped first so a tag cannot
-  // smuggle query syntax into the request.
   const auto escape_term = [](const std::string& term) {
     std::string escaped;
     escaped.reserve(term.size());
@@ -661,8 +602,6 @@ std::string BuildMusicBrainzReleaseGroupUrl(const std::string& artist,
     return escaped;
   };
 
-  // An album-less track has no release group to name, so the releasegroup
-  // clause is omitted and the artist clause alone is searched.
   const std::string query =
       album.empty() ? "artist:\"" + escape_term(artist) + "\""
                     : "artist:\"" + escape_term(artist) + "\" AND releasegroup:\"" +
@@ -677,9 +616,6 @@ std::string BuildMusicBrainzReleaseGroupUrl(const std::string& artist,
 
 std::string BuildMusicBrainzReleaseSearchUrl(const std::string& artist,
                                              const std::string& album) {
-  // WS/2 release search fallback (verified 2026-11-04:
-  // `/ws/2/release/?query=release:"..." AND artist:"..."&fmt=json` returns the
-  // release MBID whose cover lives at `/release/<mbid>/front-500`).
   const auto escape_term = [](const std::string& term) {
     std::string escaped;
     escaped.reserve(term.size());
@@ -708,9 +644,6 @@ std::string BuildCoverArtArchiveUrl(const std::string& mbid) {
   if (!IsUuid(mbid)) {
     return std::string();
   }
-  // The direct size endpoint answers with the image itself (after a redirect to
-  // the Internet Archive copy), so there is no JSON body whose http:// image
-  // URLs would have to be rewritten to https://.
   std::string url = "https://";
   url += kCoverArtArchiveHost;
   url += "/release-group/";
@@ -732,9 +665,6 @@ std::string BuildCoverArtArchiveReleaseUrl(const std::string& mbid) {
 }
 
 std::string BuildDiscogsSearchUrl(const std::string& artist, const std::string& album) {
-  // Verified 2026-11-04: `/database/search?q=...&type=release&per_page=1` is
-  // keyless today; search rows strip covers keyless, so the release id below
-  // is followed with `GET /releases/<id>` for `images[0].uri`.
   if (artist.empty() && album.empty()) {
     return std::string();
   }
@@ -759,9 +689,6 @@ std::string BuildDiscogsReleaseUrl(const std::string& release_id) {
 }
 
 std::string BuildWikipediaSearchUrl(const std::string& artist, const std::string& album) {
-  // Verified 2026-11-04: pageimages is keyless but patchy (RAM has no free
-  // pageimage); exact titles only, `pilicense=any`, thumbnails are fair-use
-  // hotlinks, so this stays a fallback, never the primary cover source.
   if (artist.empty() && album.empty()) {
     return std::string();
   }
@@ -779,9 +706,6 @@ std::string ExtractMusicBrainzReleaseGroupId(const std::string& body) {
   if (anchor == std::string::npos) {
     return std::string();
   }
-  // Slicing before searching is the point: release-group objects nest
-  // releases[].id and artist-credit[].artist.id values, so only the first "id"
-  // after the "release-groups" key is the release-group MBID.
   return ExtractJsonStringField(body.substr(anchor), "id");
 }
 
@@ -864,19 +788,9 @@ std::string ExtractDiscogsImageUrl(const std::string& body) {
   return ExtractFirstUsableUrl(scoped, "uri");
 }
 
-// Word-prefix agreement: after normalization the shorter string's whole words
-// must match the longer string's leading words. "Discovery" matches "Discovery
-// (Deluxe Edition)" and "Live at Madison Square Garden" matches its "(Live)"
-// variant, while "Program Music I" does not match "Program Music III" because
-// the final words differ. Declared in the header; defined here, outside the
-// anonymous namespace, because SearchResultMatches (inside it) calls it.
 bool MetadataMatches(const std::string& expected, const std::string& candidate) {
   const std::string normalized_expected = NormalizeForMatch(expected);
   const std::string normalized_candidate = NormalizeForMatch(candidate);
-  // A genuinely empty candidate is never a match. An empty *requested* value
-  // means the caller is not comparing that field at all (an artist-only album
-  // lookup), so it does not veto the comparison. A present expected value is
-  // still compared strictly.
   if (normalized_candidate.empty()) {
     return false;
   }
@@ -905,9 +819,6 @@ bool MetadataMatches(const std::string& expected, const std::string& candidate) 
 bool SearchResultMatches(const std::string& body, Provider provider,
                          const std::string& artist, const std::string& album) {
   if (provider == Provider::kWikipedia) {
-    // Exact-title guard (verified 2026-11-04: "Mezzanine (album)" resolves,
-    // "Mezzanine (Massive Attack album)" is missing, so the page title must
-    // agree with the requested album, not just rank first).
     const std::string hit_title = ExtractWikipediaPageTitle(body);
     if (hit_title.empty()) {
       return false;
@@ -917,8 +828,6 @@ bool SearchResultMatches(const std::string& body, Provider provider,
   }
 
   if (provider == Provider::kDiscogs) {
-    // Search rows name releases as "Artist - Album" (verified 2026-11-04:
-    // "Pink Floyd - The Dark Side Of The Moon").
     const size_t anchor = body.find("\"results\"");
     if (anchor == std::string::npos) {
       return false;
@@ -937,10 +846,6 @@ bool SearchResultMatches(const std::string& body, Provider provider,
   if (!ExtractSearchHitIdentity(body, provider, &hit_artist, &hit_album)) {
     return false;
   }
-  // An empty album is an artist-only request: the guard compares the artist and
-  // deliberately does not compare the album (see MetadataMatches), so a hit for
-  // a real album by that artist is adopted. A present album is compared
-  // strictly, so a hit naming a different album is still rejected.
   return MetadataMatches(artist, hit_artist) && MetadataMatches(album, hit_album);
 }
 
@@ -1058,7 +963,6 @@ std::string Resolver::Lookup(const std::string& artist, const std::string& album
 
   std::string cached;
   if (TakeCached(key, &cached)) {
-    // Only definitive answers are cached, so a cached empty URL is a real miss.
     LogOutcome(artist, album, cached);
     return cached;
   }
@@ -1067,8 +971,6 @@ std::string Resolver::Lookup(const std::string& artist, const std::string& album
   const std::string url = LookupUncached(artist, album, track, &definitive);
   if (definitive) {
     StoreCached(key, url);
-    // A transport failure is not definitive and deliberately logs no outcome:
-    // the same query is retried on the next request.
     LogOutcome(artist, album, url);
   }
   return url;
@@ -1080,7 +982,6 @@ std::string Resolver::ResolveAlbumTitle(const std::string& artist,
     return std::string();
   }
 
-  // Deezer strict track search first: it returns the album object inline.
   {
     const std::string url = BuildDeezerTrackSearchUrl(artist, track);
     if (!url.empty() && !stopping_.load()) {
@@ -1098,7 +999,6 @@ std::string Resolver::ResolveAlbumTitle(const std::string& artist,
     return std::string();
   }
 
-  // iTunes song search: the hit's collectionName is the album.
   {
     const std::string url = BuildItunesSongSearchUrl(artist, track);
     if (!url.empty() && !stopping_.load()) {
@@ -1234,7 +1134,6 @@ std::string Resolver::LookupFromProvider(Provider provider, const std::string& a
     int status = 0;
     if (!HttpGet(detail_url, &detail, kUserAgent, &status)) {
       if (status == 404 && answered != nullptr) {
-        // The search hit is gone: a definitive miss, not a retry.
         *answered = true;
       }
       return std::string();
@@ -1287,16 +1186,12 @@ std::string Resolver::LookupFromProvider(Provider provider, const std::string& a
       return cover_url;
     }
     if (cover_status == 404 && answered != nullptr) {
-      // A 404 is a normal Cover Art Archive miss (coverage is not complete).
       *answered = true;
     }
     return std::string();
   }
 
   if (provider == Provider::kMusicBrainz) {
-    // Combined: release-group first, then the release-search fallback. Both
-    // legs are gated separately so consecutive resolves measure from the
-    // previous request's start.
     bool group_answered = false;
     bool release_answered = false;
 
@@ -1333,8 +1228,6 @@ std::string Resolver::LookupFromProvider(Provider provider, const std::string& a
       if (stopping_.load()) {
         return std::string();
       }
-      // A release-group cover hit already returned above; a group miss falls
-      // through to the release fallback below.
     }
 
     {
@@ -1435,12 +1328,6 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
   *definitive = false;
 
   if (artist.empty()) {
-    // There is genuinely nothing to query and no point in retrying later. An
-    // empty album is not nothing: it is resolved from the track title below,
-    // and when resolution fails the providers are still searched by artist
-    // alone with the identity guard accepting an artist-only hit (see
-    // SearchResultMatches), so an album-less track still reaches the online
-    // chain instead of being refused here and falling through to the black PNG.
     *definitive = true;
     return std::string();
   }
@@ -1449,9 +1336,6 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
     return std::string();
   }
 
-  // Empty-album resolution: the track title names the album, guarded by artist
-  // + title, and the resolved album becomes the effective album for the whole
-  // art lookup below.
   std::string effective_album = album;
   if (effective_album.empty() && !track.empty()) {
     const std::string resolved = ResolveAlbumTitle(artist, track);
@@ -1463,10 +1347,6 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
     }
   }
 
-  // Abort between tiers when AIMP is unloading; failure to answer is never a
-  // definitive negative result. A provider that answered but whose hit did not
-  // survive the identity guard has still given a definitive answer: retrying
-  // the same query would not change it.
   using ProviderAnswer = std::pair<std::string, bool>;
   const auto launch_provider = [this](Provider provider, const std::string& lookup_artist,
                                       const std::string& lookup_album) {
@@ -1480,16 +1360,12 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
     });
   };
 
-  // Tier 1: Deezer + iTunes in parallel. The common case ends here, so the
-  // enrichment hosts below are never woken for a track Tier 1 already covers.
   std::future<ProviderAnswer> future_deezer =
       launch_provider(Provider::kDeezer, artist, effective_album);
   std::future<ProviderAnswer> future_itunes =
       launch_provider(Provider::kItunes, artist, effective_album);
   const ProviderAnswer deezer = future_deezer.get();
   if (stopping_.load()) {
-    // Drain the sibling before returning so no async thread outlives the
-    // resolve that spawned it.
     (void)future_itunes.get();
     return std::string();
   }
@@ -1507,9 +1383,6 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
   }
   const bool tier1_answered = deezer.second && itunes.second;
   if (!tier1_answered) {
-    // A Tier 1 transport failure must not hide the album art until cache
-    // eviction, yet Tier 2 may still have a cover: run it, and only cache the
-    // miss when every reached provider actually answered.
     ;
   }
 
@@ -1517,8 +1390,6 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
     return std::string();
   }
 
-  // Tier 2: MusicBrainz (release-group then release fallback) + Wikipedia +
-  // Discogs in parallel. Runs only when Tier 1 missed both.
   std::future<ProviderAnswer> future_mb =
       launch_provider(Provider::kMusicBrainz, artist, effective_album);
   std::future<ProviderAnswer> future_wiki =
@@ -1554,9 +1425,6 @@ std::string Resolver::LookupUncached(const std::string& artist, const std::strin
     return discogs.first;
   }
 
-  // Only a negative result that every reached provider actually answered may be
-  // cached: a timeout or DNS failure must not hide the album art until cache
-  // eviction.
   *definitive = tier1_answered && mb.second && wiki.second && discogs.second;
   return std::string();
 }
@@ -1573,14 +1441,10 @@ void Resolver::WaitForMusicBrainzSlot() {
       const auto elapsed =
           std::chrono::duration_cast<std::chrono::milliseconds>(now - last_musicbrainz_request_);
       if (elapsed >= interval) {
-        // Claim the slot before the request so consecutive resolves measure the
-        // interval from the previous request's start.
         last_musicbrainz_request_ = now;
         return;
       }
     }
-    // Sleep without the lock so Tier 2 siblings proceed while this leg waits.
-    // Short slices keep an unload prompt.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 }

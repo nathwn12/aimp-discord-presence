@@ -26,14 +26,10 @@
 #include <cstddef>
 #include <cwctype>
 
-// SHA-256 comes from CNG; linking it here keeps the extraction leg
-// self-contained.
 #pragma comment(lib, "bcrypt.lib")
 
 namespace {
 
-// The receive callback writes into this stack-owned context. WAITFOR makes
-// AIMP deliver the callback before IAIMPServiceAlbumArt::Get2 returns.
 struct ReceiveContext {
   LocalArt::Result result;
   bool want_bytes = false;
@@ -147,15 +143,11 @@ std::wstring LowerAscii(const std::wstring& text) {
   return lowered;
 }
 
-// Priority of a candidate cover base name; -1 means "not a conventional cover".
-// The prefix rule accepts Windows Media Player's AlbumArtSmall / AlbumArt_{GUID}
-// names without admitting an unrelated name that merely starts with "albumart".
 int SidecarPriority(const std::wstring& lower_base) {
   static const wchar_t* const kCoverBases[] = {L"cover", L"folder", L"front",
                                                L"album", L"albumart"};
   constexpr int kCoverBaseCount = 5;
 
-  // Exact convention bases, in priority order.
   for (int i = 0; i < kCoverBaseCount; ++i) {
     if (lower_base == kCoverBases[i]) {
       return i;
@@ -185,8 +177,6 @@ std::wstring PickBestSidecarName(const std::vector<std::wstring>& names) {
 
   for (const std::wstring& name : names) {
     const std::wstring lower = LowerAscii(name);
-    // The base is everything before the last dot; a name without a dot has no
-    // extension and cannot match.
     const size_t dot = lower.find_last_of(L'.');
     if (dot == std::wstring::npos || dot + 1 >= lower.size()) {
       continue;
@@ -243,8 +233,6 @@ std::wstring FindSidecarArt(const std::wstring& track_path) {
     return std::wstring();
   }
 
-  // Start at the track's own folder. The track path is a file path, so drop the
-  // last component; a path that names a directory instead still starts there.
   std::wstring directory = track_path;
   const size_t last_separator = directory.find_last_of(L"\\/");
   const bool names_a_file = last_separator != std::wstring::npos &&
@@ -263,8 +251,6 @@ std::wstring FindSidecarArt(const std::wstring& track_path) {
       return directory + L"\\" + name;
     }
 
-    // Ascend one level: drop the trailing component. Stop when no separator
-    // remains, which is a bare drive like "E:" - never the drive root listing.
     const size_t separator = directory.find_last_of(L"\\/");
     if (separator == std::wstring::npos) {
       break;
@@ -285,10 +271,6 @@ Result Extract(IAIMPServiceAlbumArt* service,
   context.want_bytes = want_bytes;
   void* task_id = nullptr;
 
-  // OFFLINE disables Internet providers; ORIGINAL suppresses AIMP's display
-  // downscaling so the container holds the bytes exactly as stored; NOCACHE
-  // keeps a previously downloaded cover out of this answer; WAITFOR delivers
-  // the callback before return, keeping the context stack-owned.
   const DWORD flags = AIMP_SERVICE_ALBUMART_FLAGS_WAITFOR |
                       AIMP_SERVICE_ALBUMART_FLAGS_OFFLINE |
                       AIMP_SERVICE_ALBUMART_FLAGS_ORIGINAL |

@@ -24,34 +24,6 @@
 #include <string>
 #include <vector>
 
-// Anonymous cover hosting for the presence's cover art.
-//
-// Publish() prepares the image (downscale to at most 600 px on the longest side
-// and JPEG re-encode whenever that shrinks the transfer), uploads it to
-// litterbox, then proves the upload is actually retrievable (a bare GET of the
-// returned URL must answer 200 with an image/* content type) before reporting
-// success. Distinct images are uploaded once and the returned URL is cached on
-// disk, keyed by the SHA-256 of the bytes that were uploaded - except a cached
-// URL on an ephemeral keyless host, which is re-published to Google Drive when
-// the Drive host is active, and revalidated (re-published when dead) otherwise,
-// so a dead cached URL is never sent. A cached raw.githubusercontent.com URL
-// is legacy from the removed GitHub host: it is never reused as-is, but
-// upgraded to Drive when active, else revalidated like an ephemeral URL. A
-// transport failure is retried once after a short pause; host answers (a 412,
-// an empty body) are never retried. Failures are cached briefly too, so a host
-// outage is not hammered from the player's callback.
-//
-// Every call blocks; each HTTP operation gets a ~20 second budget, so an upload
-// attempt plus its retry plus the health check can take longer than that. The
-// module never logs, prints, or persists image bytes - only sizes and hashes.
-// The on-disk cache is best effort: an unwritable path degrades to no cache.
-//
-// The chain can also lead with Google Drive, the owner's own storage: one
-// interactive OAuth consent (loopback redirect, PKCE) writes a refresh token to
-// a sidecar next to the cache, a single bootstrap makes an aimp-covers folder
-// publicly readable, and each cover is uploaded once and named by its SHA-256.
-// A Drive failure - no consent, a rejected grant, quota - is logged, cached
-// briefly, and falls through to the next host; it never blocks or crashes AIMP.
 
 namespace CoverPublisher {
 
@@ -78,9 +50,6 @@ void SetLogger(void (*logger)(const std::string& line));
 // Reloads whatever the file already holds.
 void Configure(const std::string& cache_path);
 
-// Legacy GitHub host, removed. `token` (CoverToken) and `repo` (CoverRepo) are
-// accepted and ignored without error, so an existing AIMP.ini carrying them
-// never fails to load; they enable no host and reach no network.
 void ConfigureAuth(const std::string& token, const std::string& repo);
 
 // Chooses the preferred host. `value` is "auto" (the default), "drive" or

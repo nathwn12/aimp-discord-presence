@@ -30,10 +30,6 @@
 #include "apiAlbumArt.h"
 #include "apiFileManager.h"
 
-// Extraction leg of the local-album-art feature: asks AIMP's album art
-// service for the artwork of one file, restricted to local providers (file
-// tags and sidecar files), and fingerprints the raw image container bytes.
-// The bytes are never decoded, resized, re-encoded or uploaded.
 namespace LocalArt {
 
 struct Result {

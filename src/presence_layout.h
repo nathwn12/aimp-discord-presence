@@ -25,44 +25,8 @@
 #include <string>
 #include <string_view>
 
-// The Discord presence field mapping, kept in one place:
-//
-//   details    (line 2)  the expanded `Details` template (default `{title}`);
-//                        falls back to the artist, then to the literal "AIMP",
-//                        so the line is never blank
-//   state      (line 3)  the expanded `State` template (default `{artist}`);
-//                        falls back to the album, and is omitted when that
-//                        would repeat `details`
-//   large_text           the expanded `LargeText` template (default
-//                        `{album}`), shown as the cover-art tooltip; omitted
-//                        when empty or shorter than Discord's 2-character
-//                        minimum
-//   large_image          the resolved album art URL; when no cover has resolved
-//                        yet (art missing or still loading, publish failed,
-//                        online lookup failed, or album-art display disabled)
-//                        the shared fully-transparent placeholder URL is sent
-//                        instead, so the card never falls back to Discord's
-//                        yellow native icon (never an asset key, never any
-//                        other stand-in image)
-//
-// No field repeats a value already emitted by an earlier one; empty values
-// count as absent.
-//
-// Templates understand `{title}`, `{artist}`, `{album}`, `{year}` and
-// `{genre}`. An unknown `{token}` survives verbatim, a lone brace is literal,
-// and an empty tag expands to nothing.
-//
-// With status_display_type = 2 (Details), Discord renders `details` - the
-// track title - in the member-list status line.
 namespace PresenceLayout {
 
-// The one permitted stand-in is the shared transparent PNG below: the card
-// image is never empty. A resolved cover URL is preferred whenever one exists;
-// otherwise large_image carries the transparent placeholder, so Discord never
-// draws its yellow native icon. That is the only exception - no coloured or
-// branded image, and never a bundled asset key such as `aimp`: it belongs to a
-// Discord application this plugin does NOT own, so it would resolve only while
-// that foreign application happens to serve it.
 
 // Literal shown on line 2 when both the artist and track title tags are empty.
 constexpr const char* kFallbackDetails = "AIMP";
@@ -188,7 +152,6 @@ inline std::string FormatTemplate(std::string_view tmpl,
 
     const size_t end = tmpl.find('}', index + 1);
     if (end == std::string_view::npos) {
-      // A lone opening brace is literal text.
       expanded.push_back('{');
       ++index;
       continue;
@@ -197,7 +160,6 @@ inline std::string FormatTemplate(std::string_view tmpl,
     const std::string_view token = tmpl.substr(index + 1, end - index - 1);
     const std::string* value = detail::FieldForToken(fields, token);
     if (value == nullptr) {
-      // Unknown tokens survive verbatim, braces included.
       expanded.append(tmpl.data() + index, end - index + 1);
     } else if (url_encode) {
       expanded += detail::PercentEncode(*value);

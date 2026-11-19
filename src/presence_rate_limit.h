@@ -23,10 +23,6 @@
 
 #include <cstdint>
 
-// Discord accepts at most 5 activity updates per 20 seconds. The plugin sends
-// on a trailing edge: an update that arrives before the interval has elapsed is
-// remembered (the latest state wins) and sent when the interval expires, so a
-// track change is delayed but never dropped.
 namespace PresenceRateLimit {
 
 // `last_sent_ms` is a monotonic millisecond timestamp; 0 means nothing has been

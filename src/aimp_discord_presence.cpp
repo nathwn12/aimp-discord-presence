@@ -38,9 +38,6 @@
 
 namespace {
 
-// The publisher logs through a plain function pointer (it owns no plugin
-// object). This trampoline forwards to the live instance's LogCover, which
-// routes to the DebugLog client. Set once in Load(), cleared in Unload().
 AimpDiscordPresence* g_publisher_log_target = nullptr;
 
 void PublisherLogTrampoline(const std::string& line) {
@@ -53,19 +50,10 @@ constexpr int kPlayerStateStopped = 0;
 constexpr int kPlayerStatePaused = 1;
 constexpr int kPlayerStatePlaying = 2;
 
-// A position difference larger than this means the user seeked and the
-// timestamp Discord is counting down locally has to be corrected.
 constexpr double kSeekDriftSeconds = 3.0;
 
-// Input cap only: a cover above this size is skipped before the publisher sees
-// it (a pathological source is not compressed into submission). Anything that
-// passes is downscaled and re-encoded before transfer.
 constexpr size_t kMaxCoverBytes = 20 * 1024 * 1024;
 
-// Unload asks the throttle worker to publish a presence clear and waits this
-// long for it. The client call only queues a frame (the client's own worker
-// writes it), so the wait is a formality; the bound exists so a wedged client
-// can never hold AIMP's unload open.
 constexpr int kPresenceClearOnUnloadTimeoutMs = 2000;
 
 int64_t UnixSecondsNow() {
@@ -85,8 +73,6 @@ bool IsStreamUrl(const std::wstring& url) {
   return url.size() >= 8 && url.compare(0, 8, L"https://") == 0;
 }
 
-// Drive-absolute ("C:\x") or UNC ("\\server\x") paths are used as configured;
-// anything else is resolved below the plugin DLL's directory.
 bool IsAbsolutePath(const std::wstring& path) {
   if (path.size() >= 3 && path[1] == L':' &&
       (path[2] == L'\\' || path[2] == L'/')) {
@@ -96,8 +82,6 @@ bool IsAbsolutePath(const std::wstring& path) {
          (path[1] == L'\\' || path[1] == L'/');
 }
 
-// Directory of the loaded plugin DLL, with a trailing separator, or an empty
-// string when it cannot be determined.
 std::string PluginDirectory() {
   HMODULE module = nullptr;
   if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -122,10 +106,6 @@ std::string PluginDirectory() {
   return directory.substr(0, separator + 1);
 }
 
-// Turns the configured DebugLog value into the UTF-8 path the IPC client
-// expects. Returns an empty string when the DLL directory cannot be
-// determined, in which case logging stays off rather than writing somewhere
-// unpredictable.
 std::string ResolveDebugLogPath(const std::wstring& configured) {
   if (configured.empty()) {
     return std::string();
@@ -142,10 +122,6 @@ std::string ResolveDebugLogPath(const std::wstring& configured) {
   return directory + Utils::ToString(configured);
 }
 
-// The cover cache defaults to cover-cache.txt next to the DLL, so an empty
-// CoverCache still has a home. A DLL directory that cannot be determined
-// leaves the path empty, which turns the publisher's on-disk cache off rather
-// than writing somewhere unpredictable.
 std::string ResolveCoverCachePath(const std::wstring& configured) {
   if (IsAbsolutePath(configured)) {
     return Utils::ToString(configured);
@@ -160,10 +136,6 @@ std::string ResolveCoverCachePath(const std::wstring& configured) {
                                                         : configured);
 }
 
-// The Drive refresh token lives in a sidecar in the same directory as the cover
-// cache (drive-token.txt), so the whole publish chain's state sits together. An
-// empty cache path leaves the sidecar path empty, which turns the Drive host off
-// rather than writing a token somewhere unpredictable.
 std::string ResolveCoverStatePath(const std::string& cover_cache_path) {
   if (cover_cache_path.empty()) {
     return std::string();
@@ -209,47 +181,22 @@ bool AimpDiscordPresence::Load() {
 
   client_.reset(new DiscordIpc::Client(std::to_string(settings.application_id)));
 
-  // Opt-in frame log. The client writes nothing while the setting is empty
-  // and silently ignores a path it cannot open, so a bad value cannot
-  // disturb the connection.
   if (!settings.debug_log.empty()) {
     client_->SetLogPath(ResolveDebugLogPath(settings.debug_log));
   }
 
-  // Publish target for local covers: the cache is keyed by image SHA-256, so a
-  // cover is uploaded once and reused. Configuring it never touches the
-  // network; an unusable path only costs the on-disk cache.
   const std::string cover_cache_path = ResolveCoverCachePath(settings.cover_cache);
   CoverPublisher::Configure(cover_cache_path);
-  // The preferred host chain: "auto" leads with Drive when its credentials are
-  // configured, otherwise the keyless hosts. A typo in CoverHost - or a legacy
-  // "github" value - is read as "auto", so the chain is never left empty and
-  // no removed host can enter it.
   CoverPublisher::ConfigureHost(Utils::ToString(settings.cover_host));
-  // Legacy CoverToken/CoverRepo are ignored without error: the GitHub host is
-  // gone, so no token is read and nothing is configured for it.
-  // The Google Drive host. The client secret stays in memory, and the refresh
-  // token goes to drive-token.txt next to the cover cache. The first publish
-  // that reaches Drive opens the browser for a one-time consent on the cover
-  // worker thread; every failure falls through to the next host.
   CoverPublisher::ConfigureDrive(Utils::ToString(settings.drive_client_id),
                                  Utils::ToString(settings.drive_client_secret),
                                  ResolveCoverStatePath(cover_cache_path));
-  // Route the publisher's host-choice and all-hosts-failed lines into the same
-  // DebugLog as the cover vocabulary.
   g_publisher_log_target = this;
   CoverPublisher::SetLogger(&PublisherLogTrampoline);
-  // One line per load, after the logger is live: the policy and which hosts are
-  // in the chain, with a fixed reason token for any that are not. This is what
-  // makes "no drive lines at all" diagnosable from the log itself.
   CoverPublisher::LogHostConfiguration();
 
-  // Single publisher worker. It owns no AIMP object, only the bytes it is
-  // handed, and it is joined in Unload().
   cover_worker_ = std::thread(&AimpDiscordPresence::CoverWorkerMain, this);
 
-  // Rate-limit worker: publishes a deferred update on its trailing edge. It
-  // only reads the already-built activity and the IPC client, never AIMP.
   StartThrottleWorker();
 
   album_art_.SetCallback(
@@ -257,9 +204,6 @@ bool AimpDiscordPresence::Load() {
              const std::string& file_path, const std::string& url) {
         ApplyResolvedArtwork(artist, album, file_path, url);
       });
-  // Online-rung diagnostics go through the same DebugLog path as the cover
-  // code; the hook is invoked on the resolver worker thread, never with image
-  // bytes.
   album_art_.SetLogger([this](const std::string& line) { LogCover(line); });
   album_art_.SetOnlineEnabled(settings.use_albumart_online);
 
@@ -278,8 +222,6 @@ void AimpDiscordPresence::LoadConfig() {
   LoadConfigValue(config, L"DiscordPresence\\UseAlbumArtOnline", &settings.use_albumart_online);
   LoadConfigValue(config, L"DiscordPresence\\LocalCover", &settings.local_cover);
   LoadConfigValue(config, L"DiscordPresence\\CoverCache", &settings.cover_cache);
-  // Legacy CoverToken/CoverRepo keys are deliberately not read: they are
-  // ignored without error.
   LoadConfigValue(config, L"DiscordPresence\\CoverHost", &settings.cover_host);
   LoadConfigValue(config, L"DiscordPresence\\DriveClientId", &settings.drive_client_id);
   LoadConfigValue(config, L"DiscordPresence\\DriveClientSecret", &settings.drive_client_secret);
@@ -323,9 +265,6 @@ void AimpDiscordPresence::InitializeMessageDispatcher() {
                             OnPropertyValue(message, param1);
                           });
 
-  // The every-second position tick; the asynchronous artwork result needs a
-  // notification after it completes, and the seek-only property event is not
-  // one.
   message_dispatcher.Hook(Aimp::Messages::Events::kPlayerUpdatePosition,
                           [&](DWORD, int, void*, HRESULT*) {
                             OnPlayerUpdatePosition();
@@ -342,25 +281,14 @@ void AimpDiscordPresence::LoadConfigValue(Aimp::Core::Service::Config config, co
 bool AimpDiscordPresence::Unload() {
   Aimp::Messages::Service::MessageDispatcher().UnhookAll();
 
-  // Stop the publisher's log hook before the instance goes away, so a late
-  // worker line can never touch a dead plugin.
   CoverPublisher::SetLogger(nullptr);
   g_publisher_log_target = nullptr;
 
-  // Joins the publisher worker: it holds only queued image bytes, so it can be
-  // stopped without an AIMP object ever crossing threads. An in-flight browser
-  // consent is abandoned first, so the join never waits out the consent window.
   CoverPublisher::CancelDriveConsent();
   StopCoverWorker();
 
-  // Joins the artwork worker, so no callback can touch this plugin afterwards.
   album_art_.Shutdown();
 
-  // Stop the throttle worker before the client goes away. A queued update must
-  // not be published while the plugin unloads, and the clear is published by
-  // the worker itself, while it is still alive, so the message thread never
-  // touches the client. The client's own Shutdown() then clears deliberately on
-  // a live connection as its last act, which also covers a timed-out wait.
   ClearPresenceBeforeStop();
   StopThrottleWorker();
 
@@ -381,11 +309,6 @@ void AimpDiscordPresence::OnPlayerState(DWORD, int param1) {
     track_key_.clear();
     online_requested_ = false;
     update_gate_.Reset();
-    // The worker is the only sender: record that presence must go away and
-    // wake it. A queued update must not resurrect the presence after the clear,
-    // and the next playback should publish immediately rather than wait out an
-    // interval that belonged to the previous track, so the revision is bumped
-    // and the interval reset together.
     {
       std::lock_guard<std::mutex> lock(throttle_mutex_);
       sent_at_seconds_.store(0, std::memory_order_relaxed);
@@ -415,16 +338,12 @@ void AimpDiscordPresence::OnPropertyValue(DWORD, int param1) {
     return;
   }
 
-  // Track change: AIMP does not raise a dedicated event for every source, so
-  // the track identity is compared on the position notification instead.
   const TrackInfo info = ReadTrackInfo();
   if (info.key != track_key_) {
     RefreshPresence(true);
     return;
   }
 
-  // Seek: the timestamps are absolute, so Discord counts down by itself and no
-  // periodic update is required. Only a real drift triggers a new update.
   if (sent_at_seconds_.load(std::memory_order_relaxed) != 0) {
     const double elapsed = static_cast<double>(
         UnixSecondsNow() - sent_at_seconds_.load(std::memory_order_relaxed));
@@ -436,9 +355,6 @@ void AimpDiscordPresence::OnPropertyValue(DWORD, int param1) {
     }
   }
 
-  // A held NEW track is released here on artwork, on a definitive miss, or on
-  // the gate deadline, then published once. A late cover after the deadline
-  // still teaches the adaptive budget.
   const bool artwork_applied = ApplyPendingArtwork();
   const uint64_t now_ms = MonotonicMillisNow();
   if (update_gate_.HasPending()) {
@@ -467,11 +383,6 @@ void AimpDiscordPresence::OnPlayerUpdatePosition() {
     return;
   }
 
-  // The artwork lookup is asynchronous (it can take seconds), so by the time
-  // it resolves the seek-only property event may have already passed. This
-  // event fires every second while a track plays, so the late result is
-  // applied and sent promptly. A held NEW track is released here on artwork,
-  // on a definitive miss, or on the gate deadline, then published once.
   const bool artwork_applied = ApplyPendingArtwork();
   const uint64_t now_ms = MonotonicMillisNow();
   if (update_gate_.HasPending()) {
@@ -503,8 +414,6 @@ AimpDiscordPresence::TrackInfo AimpDiscordPresence::ReadTrackInfo() {
   const std::wstring file_name =
       fileinfo.Get<std::wstring>(Aimp::FileManager::FileInfo::Props::kFileName);
   info.title = Utils::ToString(fileinfo.Get<std::wstring>(Aimp::FileManager::FileInfo::Props::kTitle));
-  // AIMP joins a multi-value artist tag with bare commas; normalise once here
-  // so every consumer (card, templates, identity key) sees ", ".
   info.artist = PresenceLayout::NormalizeArtistSeparators(
       Utils::ToString(fileinfo.Get<std::wstring>(Aimp::FileManager::FileInfo::Props::kArtist)));
   info.album = Utils::ToString(fileinfo.Get<std::wstring>(Aimp::FileManager::FileInfo::Props::kAlbum));
@@ -522,28 +431,16 @@ AimpDiscordPresence::TrackInfo AimpDiscordPresence::ReadTrackInfo() {
 void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
   const TrackInfo info = ReadTrackInfo();
 
-  // Never publish the "AIMP" fallback card: empty file info means no track.
   if (info.file.empty()) {
     online_requested_ = false;
     update_gate_.Reset();
     return;
   }
 
-  // Local (offline) cover: extract the track's own artwork on the message
-  // thread once per new track, log its fingerprint, and either apply a URL
-  // already known for that image or hand the bytes to the publisher worker.
-  // A URL is only ever adopted when an upload proved retrievable, so the
-  // online chain's URL (or no image) stays in place until then. Runs
-  // before SetInfo() so a known URL lands in this same update.
-  // Local cover layers (1 and 2): the track's own embedded art, or a sidecar
-  // image the extractor found. `local_art_found` records that a local cover
-  // exists; when publishing it fails, the online rung below must still be asked
-  // - no image is sent only for a track where every layer failed.
   bool local_art_found = false;
   bool local_published = false;
   if (request_artwork && info.key != local_art_key_) {
     local_art_key_ = info.key;
-    // A cover queued for the previous track must not be applied to this one.
     local_cover_sha_.clear();
     if (!info.is_url) {
       LocalArt::Result art =
@@ -552,9 +449,6 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
         local_art_found = true;
         local_cover_sha_ = art.sha256_hex;
         MaybePublishLocalCover(info, std::move(art));
-        // MaybePublishLocalCover applies a URL synchronously only on a known
-        // hit; an in-flight upload leaves local_cover_url_ empty, and that is
-        // exactly the case that must fall through to online rather than no image.
         std::lock_guard<std::mutex> lock(presence_mutex_);
         local_published = !local_cover_url_.empty();
       }
@@ -577,12 +471,6 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
     if (PresenceLayout::ShouldRequestOnlineForTrack(
             settings.use_albumart, settings.use_albumart_online, info.artist,
             local_art_found, local_published)) {
-      // Non-blocking: the worker resolves the URL and publishes it, the next
-      // notification applies it. The album tag is not required: an album-less
-      // track still gets a keyless lookup, keyed by artist + file path, with
-      // the track title resolving the album first. A local
-      // cover that was found never suppresses this request: if its publish
-      // fails, the online rung below is what may still supply an image.
       album_art_.Request(info.artist, info.album, info.file, info.title);
       online_requested_ = true;
     } else {
@@ -593,10 +481,6 @@ void AimpDiscordPresence::RefreshPresence(bool request_artwork) {
     }
   }
 
-  // Adaptive flash gate: a NEW track without a real cover is held until
-  // artwork resolves, a definitive miss settles, or the learned deadline, then
-  // published once. Cached/ready, no-source, and same-track updates send
-  // immediately.
   const bool cover_ready =
       last_large_image_ != PresenceLayout::kTransparentLargeImageUrl;
   const uint64_t now_ms = MonotonicMillisNow();
@@ -614,8 +498,6 @@ void AimpDiscordPresence::SetInfo(const TrackInfo& info) {
   activity_.status_display_type = settings.status_display_type;
   activity_.name = Utils::ToString(settings.name);
 
-  // Tag values for the configurable templates. Populated here so the button
-  // templates in SendActivity() expand against the same track as the card.
   track_fields_.title = info.title;
   track_fields_.artist = info.artist;
   track_fields_.album = info.album;
@@ -630,10 +512,6 @@ void AimpDiscordPresence::SetInfo(const TrackInfo& info) {
   activity_.state = fields.state;
   activity_.large_text = fields.large_text;
 
-  // The local-cover layer takes priority over the online chain: a cover read
-  // from the file itself is always the right one. Both are matched by track
-  // identity key, which the shared builder keeps in step with
-  // ApplyPendingArtwork(); an empty album does not suppress the image.
   const std::string large_image = ResolveLargeImageLocked(
       AlbumArt::BuildAlbumKey(info.artist, info.album, info.file), nullptr);
   activity_.large_image = large_image;
@@ -646,10 +524,6 @@ void AimpDiscordPresence::SetSmallImage(const TrackInfo& info, int state) {
     state = player.State();
   }
 
-  // One switch decides both the image and its text, so the label always
-  // describes the badge actually shown. A configured label shorter than two
-  // characters is cleared by the selector, which omits the field instead of
-  // sending a value Discord rejects.
   PresenceLayout::SmallBadgeSettings badge_settings;
   badge_settings.use_play = settings.status.use_play;
   badge_settings.play_image = Utils::ToString(settings.status.play_image);
@@ -673,8 +547,6 @@ void AimpDiscordPresence::SetTimestamp(const TrackInfo& info) {
 
   const int64_t now = UnixSecondsNow();
 
-  // Paused: count UP from the pause moment (start-only, no end), Potflix gate
-  // parity (gate.go:146-160).
   if (paused_) {
     activity_.start_timestamp = now;
     return;
@@ -682,10 +554,6 @@ void AimpDiscordPresence::SetTimestamp(const TrackInfo& info) {
 
   Aimp::Player::Service::Player player;
   const int position = static_cast<int>(round(player.Position()));
-  // Elapsed anchor is always now-pos; the projected end is added only when the
-  // bar is enabled, the source is a local file, and the duration is known
-  // (total > pos), Potflix gate parity (gate.go:129-137). Streams and
-  // bar-off stay start-only (count-up, no bar).
   if (settings.timestamp && !info.is_url) {
     const int duration = static_cast<int>(round(player.Duration()));
     activity_.start_timestamp = now - position;
@@ -700,17 +568,12 @@ void AimpDiscordPresence::SetTimestamp(const TrackInfo& info) {
 void AimpDiscordPresence::ApplyResolvedArtwork(const std::string& artist, const std::string& album,
                                                const std::string& file_path,
                                                const std::string& url) {
-  // Runs on the album art worker thread; publishing the value is all that is
-  // allowed here.
   std::lock_guard<std::mutex> lock(presence_mutex_);
   artwork_key_ = AlbumArt::BuildAlbumKey(artist, album, file_path);
   artwork_url_ = url;
 }
 
 bool AimpDiscordPresence::ApplyPendingArtwork() {
-  // A finished publish, if any. The URL is adopted only when the publisher
-  // proved the upload retrievable (Result.ok); a failure is logged and leaves
-  // the online chain's URL (or no image) in place.
   {
     std::string hash;
     bool ok = false;
@@ -738,21 +601,12 @@ bool AimpDiscordPresence::ApplyPendingArtwork() {
 
     if (!hash.empty()) {
       if (!ok) {
-        // The gate at work: no local URL is adopted, the host that failed is
-        // on record, and the online rung (or no image) stays in place. The
-        // publisher's own negative cache keeps a dead host from being retried
-        // immediately.
         LogCover("local-cover failed hash=" + hash +
                  " host=" + (host.empty() ? "unknown" : host) +
                  " reason=" + (reason.empty() ? "unknown" : reason) +
                  " detail=" + (detail.empty() ? "unknown" : detail));
       } else {
-        // Remember the URL even when the track has moved on, so the image is
-        // never uploaded twice in one session.
         local_cover_urls_[hash] = url;
-        // Once per cover: which host served it, what was prepared, what was
-        // transferred, which key the cache used. Sizes and hashes only - never
-        // bytes.
         LogCover("local-cover published hash=" + hash +
                  " host=" + (host.empty() ? "unknown" : host) + " url=" + url +
                  " detail=" + (detail.empty() ? "unknown" : detail));
@@ -775,10 +629,6 @@ bool AimpDiscordPresence::ApplyPendingArtwork() {
   {
     std::lock_guard<std::mutex> lock(presence_mutex_);
 
-    // The shared builder keeps this comparison in step with SetInfo(). The
-    // resolved image is applied for the track identity it was resolved for,
-    // album or not: only large_text (the caption) depends on the album tag, so
-    // an empty album must not suppress the artwork.
     const std::string album_key =
         AlbumArt::BuildAlbumKey(track_artist_, track_album_, track_file_);
     const std::string large_image = ResolveLargeImageLocked(album_key, &applied_source);
@@ -793,8 +643,6 @@ bool AimpDiscordPresence::ApplyPendingArtwork() {
     applied_album = track_album_;
   }
 
-  // An applied online cover settles its lookup: without this the non-empty URL
-  // with a matching key would read as pending forever.
   if (applied_source == "online") {
     online_requested_ = false;
   }
@@ -809,9 +657,6 @@ bool AimpDiscordPresence::HasPendingCoverSource() {
   state.cover_ready =
       last_large_image_ != PresenceLayout::kTransparentLargeImageUrl;
 
-  // Local upload queued, running, or finished-but-unapplied for the current
-  // image. The ready flag matters: a result that lands between the artwork
-  // poll and this check is still pending (hold), never a miss.
   if (!local_cover_sha_.empty()) {
     std::lock_guard<std::mutex> lock(cover_mutex_);
     if (cover_has_request_ && cover_request_hash_ == local_cover_sha_) {
@@ -823,10 +668,6 @@ bool AimpDiscordPresence::HasPendingCoverSource() {
     }
   }
 
-  // Online lookup requested for the current track. Unanswered (key mismatch)
-  // is pending; a matching key with a non-empty URL arrived but is not yet
-  // applied (pending); a matching key with an empty URL is the definitive
-  // miss. An applied cover is never pending (cover_ready above).
   state.online_requested = online_requested_;
   if (online_requested_) {
     const std::string album_key =
@@ -841,10 +682,6 @@ bool AimpDiscordPresence::HasPendingCoverSource() {
 
 std::string AimpDiscordPresence::ResolveLargeImageLocked(const std::string& album_key,
                                                          std::string* source) const {
-  // The setting turns both sources off. It no longer means "no image": the card
-  // stays honest either way, because the resolver's empty result is replaced by
-  // the shared transparent placeholder, never left empty (Discord would draw
-  // its yellow default icon). An empty string cannot leave this function.
   const std::string local_url = settings.use_albumart ? local_cover_url_ : std::string();
   const std::string online_url = settings.use_albumart ? artwork_url_ : std::string();
   return PresenceLayout::ResolveCardLargeImage(album_key, local_cover_key_, local_url,
@@ -863,9 +700,6 @@ void AimpDiscordPresence::MaybePublishLocalCover(const TrackInfo& info,
   const std::string hash = art.sha256_hex;
   const size_t size = art.bytes.size();
 
-  // Only the container shapes the host serves back (and the publisher
-  // therefore accepts) are uploaded; anything else would spend an upload on a
-  // URL the publisher has to reject.
   const char* mime = nullptr;
   if (art.format == "PNG") {
     mime = "image/png";
@@ -900,7 +734,6 @@ void AimpDiscordPresence::MaybePublishLocalCover(const TrackInfo& info,
     std::lock_guard<std::mutex> lock(cover_mutex_);
     if (cover_inflight_hash_ == hash ||
         (cover_result_ready_ && cover_result_hash_ == hash)) {
-      // Already queued, running or waiting to be picked up.
       return;
     }
     cover_request_hash_ = hash;
@@ -935,8 +768,6 @@ void AimpDiscordPresence::CoverWorkerMain() {
       cover_has_request_ = false;
     }
 
-    // Blocking, but on this worker only: the message thread is never held up
-    // by the upload, which is bounded by the publisher's own budget.
     const CoverPublisher::Result result = CoverPublisher::Publish(bytes, mime.c_str());
     std::vector<unsigned char>().swap(bytes);
 
@@ -1011,10 +842,6 @@ LocalArt::Result AimpDiscordPresence::ExtractLocalArt(const TrackInfo& info,
             " dims=" + std::to_string(art.width) + "x" + std::to_string(art.height);
     line += " provider=offline-only flags=WAITFOR|OFFLINE|ORIGINAL|NOCACHE";
   } else {
-    // AIMP's own offline providers found nothing (the multi-disc case: the art
-    // lives in an ancestor folder). Fall back to a conventional sidecar file,
-    // then hand its bytes down the exact same path the SDK result would take
-    // (same size cap, same format gate, same publish).
     const std::wstring sidecar = LocalArt::FindSidecarArt(file);
     if (!sidecar.empty() && want_bytes) {
       sidecar_art = LocalArt::LoadSidecarBytes(sidecar);
@@ -1051,9 +878,6 @@ void AimpDiscordPresence::SendActivity() {
     snapshot = activity_;
   }
 
-  // Buttons come from config. Their token values are expanded against the
-  // current track; Url templates are percent-encoded, labels are not. The
-  // builder still enforces the https-only rule and Discord's length limits.
   snapshot.buttons[0].label = PresenceLayout::FormatTemplate(
       Utils::ToString(settings.button1_label), track_fields_, false);
   snapshot.buttons[0].url = PresenceLayout::FormatTemplate(
@@ -1067,10 +891,6 @@ void AimpDiscordPresence::SendActivity() {
   const double position = player.Position();
   const int64_t now_seconds = UnixSecondsNow();
 
-  // Record what should be on screen and wake the only sender. The gate and the
-  // client call belong to the worker now, so this path cannot interleave with a
-  // send in flight; a newer state simply replaces this one and bumps the
-  // revision again, and the worker publishes the newest at the deadline.
   {
     std::lock_guard<std::mutex> lock(throttle_mutex_);
     desired_activity_ = std::move(snapshot);
@@ -1084,9 +904,6 @@ void AimpDiscordPresence::SendActivity() {
 
 void AimpDiscordPresence::StartThrottleWorker() {
   {
-    // A reload after Unload must start a fresh gate and a fresh revision
-    // sequence: the previous stop flag, desired state and interval belong to
-    // the old session. Safe because the previous worker was joined in Unload.
     std::lock_guard<std::mutex> lock(throttle_mutex_);
     throttle_stopping_ = false;
     desired_valid_ = false;
@@ -1104,10 +921,6 @@ void AimpDiscordPresence::StopThrottleWorker() {
   {
     std::lock_guard<std::mutex> lock(throttle_mutex_);
     throttle_stopping_ = true;
-    // Bump the revision as well as setting the flag: a worker that is past its
-    // stop check must see a revision that is not the one it published, so the
-    // next iteration re-reads state instead of assuming it is idle. The stop
-    // flag is what actually ends the loop.
     ++desired_revision_;
   }
   throttle_wake_.notify_all();
@@ -1120,10 +933,6 @@ void AimpDiscordPresence::QueueClearLocked() {
   desired_valid_ = false;
   desired_activity_ = DiscordIpc::Activity();
   ++desired_revision_;
-  // The gate belonged to the track that just ended: a clear is never held
-  // behind it, and the next playback publishes immediately. A worker whose send
-  // is already in flight will not overwrite this reset (GateAfterAction), so
-  // the clear it superseded is issued on the next iteration.
   throttle_last_sent_ms_ = 0;
 }
 
@@ -1141,10 +950,6 @@ void AimpDiscordPresence::ClearPresenceBeforeStop() {
   const uint64_t clear_revision = desired_revision_;
   throttle_wake_.notify_one();
 
-  // The worker acts on the clear while it is still alive; after the join no
-  // client call can come from this plugin. The predicate is the worker's own
-  // completion condition, re-checked under this mutex, so the completion's
-  // notify_all cannot be missed.
   throttle_wake_.wait_for(
       lock, std::chrono::milliseconds(kPresenceClearOnUnloadTimeoutMs),
       [this, clear_revision] {
@@ -1154,8 +959,6 @@ void AimpDiscordPresence::ClearPresenceBeforeStop() {
   const bool published = last_sent_revision_ >= clear_revision;
   lock.unlock();
   if (!published) {
-    // Not fatal: Client::Shutdown() clears the presence on a live READY
-    // connection as its own last act.
     LogCover("presence clear on unload timed out; relying on client shutdown");
   }
 }
@@ -1179,9 +982,6 @@ void AimpDiscordPresence::ThrottleWorkerMain() {
         request, MonotonicMillisNow(), interval);
 
     if (decision.action == PresenceThrottlePlan::Action::kIdle) {
-      // Idle means the published revision is the desired one. Any bump makes
-      // them differ again, so that equality is the wake predicate; a spurious
-      // wake only re-evaluates it under the lock.
       throttle_wake_.wait(lock, [this] {
         return throttle_stopping_ || desired_revision_ != last_sent_revision_;
       });
@@ -1189,9 +989,6 @@ void AimpDiscordPresence::ThrottleWorkerMain() {
     }
 
     if (decision.action == PresenceThrottlePlan::Action::kWait) {
-      // Bounded by the deadline. A bump wakes us earlier and the loop decides
-      // again against the newer revision, so an old wait never masks newer
-      // state; the predicate is the revision we decided on.
       const uint64_t observed_revision = desired_revision_;
       throttle_wake_.wait_for(
           lock, std::chrono::milliseconds(static_cast<int64_t>(decision.wait_ms)),
@@ -1201,9 +998,6 @@ void AimpDiscordPresence::ThrottleWorkerMain() {
       continue;
     }
 
-    // Act on exactly the state this decision was made from, then re-check: the
-    // revision proves whether a newer request arrived while the call was in
-    // flight.
     const uint64_t acted_revision = desired_revision_;
     const bool clear =
         decision.action == PresenceThrottlePlan::Action::kClear;
@@ -1217,9 +1011,6 @@ void AimpDiscordPresence::ThrottleWorkerMain() {
       at_seconds = desired_at_seconds_;
     }
 
-    // The client takes its own mutex, so it is never called with this one held.
-    // One call, no retry: a failure is the client's to recover from, and the
-    // revision below is still recorded so the loop cannot spin on it.
     lock.unlock();
     if (client_) {
       if (clear) {
@@ -1229,28 +1020,17 @@ void AimpDiscordPresence::ThrottleWorkerMain() {
       }
     }
     if (!clear) {
-      // A deferred send is a send: it moves the seek baseline to the values the
-      // card was built from. Relaxed atomics read by the seek check, so neither
-      // store needs the lock and their order after the call does not matter.
       sent_position_.store(position, std::memory_order_relaxed);
       sent_at_seconds_.store(at_seconds, std::memory_order_relaxed);
     } else {
-      // No card is on screen now. The request already reset this, but a stale
-      // send that completed after the request must not leave a baseline
-      // pointing at a card the clear then removed.
       sent_at_seconds_.store(0, std::memory_order_relaxed);
     }
     lock.lock();
 
-    // The published revision is the one the call acted on, not the current one:
-    // if a clear arrived during the call this is already stale, the next
-    // decision sees the difference, and the clear is issued. The interval gate
-    // keeps whatever a clear set while the call was in flight.
     last_sent_revision_ = acted_revision;
     throttle_last_sent_ms_ = PresenceThrottlePlan::GateAfterAction(
         decision.action, gate_before, throttle_last_sent_ms_,
         MonotonicMillisNow());
-    // A drain waiting on the unload clear observes this completion.
     throttle_wake_.notify_all();
   }
 }

@@ -25,15 +25,6 @@
 
 #include "presence_rate_limit.h"
 
-// The throttle worker is the only thread that talks to the Discord client. The
-// message thread records what the card should be ("desired state") and bumps a
-// revision for every request - a send or a clear - then wakes the worker. The
-// worker publishes against the revision it last acted on, so a request that
-// arrives while a client call is in flight can never be lost: the stale call
-// only advances the *published* revision, the next decision sees the newer one,
-// and the clear that superseded the send is issued next. Keeping that decision
-// here - no client, no real clock, no locks - makes the ordering rule testable
-// as a pure function.
 namespace PresenceThrottlePlan {
 
 enum class Action {
@@ -67,11 +58,6 @@ inline Decision Decide(const Request& request, uint64_t now_ms,
   if (request.desired_revision == request.last_sent_revision) {
     return Decision{Action::kIdle, 0};
   }
-  // A clear is a terminal state change: it cannot be coalesced into a later
-  // send, and holding it behind the interval leaves a stale card visible with
-  // nothing playing - the exact user-visible bug this design exists to
-  // prevent. The interval exists to stop track-change churn, so it gates a
-  // send only and a pending clear is returned at once.
   if (!request.desired_valid) {
     return Decision{Action::kClear, 0};
   }
