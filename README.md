@@ -6,6 +6,17 @@
   <img src="https://img.shields.io/badge/platform-windows--64bit-2b3137?logo=windows&logoColor=white" alt="Platform" />
 </p>
 
+<p align="center">
+  <img src="docs/preview/presence-preview.png" width="720" alt="The Discord profile card showing AIMP playing a track with matched album art" />
+</p>
+
+<p align="center">
+  <img src=".github/screenshots/1.png" width="190" alt="Presence with artwork and playback time." />
+  <img src=".github/screenshots/2.png" width="190" alt="Presence with the track and artist line." />
+  <img src=".github/screenshots/3.png" width="190" alt="Presence without a matched artwork." />
+  <img src=".github/screenshots/4.png" width="190" alt="Presence paused." />
+</p>
+
 ## Why AIMP Discord Presence
 
 AIMP has no built-in Discord Rich Presence. This plugin publishes the playing track to your Discord profile the way Spotify does: artist, song and artwork, with optional playback time and configurable badges.
