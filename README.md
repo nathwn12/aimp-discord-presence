@@ -22,7 +22,7 @@ AIMP has no built-in Discord Rich Presence. This plugin publishes the playing tr
 3. Confirm the plugin is **enabled** in **Settings ▸ Plugins**.
 4. Restart AIMP, then play a track; the presence appears on your Discord profile.
 
-## Use
+## Use it
 
 Play a track in AIMP. The Discord profile card updates on play, pause and track change, and shows the matched artwork when a layer succeeds.
 
@@ -82,6 +82,6 @@ CI runs the same configure and build for Win32 and x64 on every push and pull re
 - [Releases](https://github.com/nathwn12/aimp-discord-presence/releases)
 - [Full setup and keys](docs/GUIDE.md)
 - [Build from source](docs/BUILDING.md)
-- Upstream: [Exle/aimp-discord-presence](https://github.com/Exle/aimp-discord-presence) — the original plugin; this fork adds the multi-layer cover-art chain and the presence card, and is not endorsed by Exle. Credit for the original work belongs to Exle.
+- [Exle/aimp-discord-presence](https://github.com/Exle/aimp-discord-presence)
 
-Built by nathwn12
+<p align="center"><sub>Built by nathwn12</sub></p>
