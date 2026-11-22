@@ -1,0 +1,13 @@
+---
+project: aimp-discord-presence
+one_line: Show what AIMP is playing as a Discord Rich Presence with artist, track and album art.
+stack: [C++]
+status: draft
+since: 2026-10
+capabilities: []
+limits: []
+updated: 2026-11-22
+draft: true
+---
+
+AIMP has no built-in Discord Rich Presence. This plugin publishes the playing track to your Discord profile the way Spotify does: artist, song and artwork, with optional playback time and configurable badges.
