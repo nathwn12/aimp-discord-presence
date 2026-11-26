@@ -28,7 +28,7 @@ AIMP has no built-in Discord Rich Presence. This plugin publishes the playing tr
 
 ## Install
 
-1. Download `aimp_discordPresence.dll` version 2.2.1 from the [Releases page](https://github.com/nathwn12/aimp-discord-presence/releases), or build it with [docs/BUILDING.md](docs/BUILDING.md).
+1. Download the current `aimp_discordPresence.dll` from the [Releases page](https://github.com/nathwn12/aimp-discord-presence/releases), or build it with [docs/BUILDING.md](docs/BUILDING.md). The shipped version is stamped from `src/product.version` by `scripts/build-release.ps1`; read those sources instead of a copy here.
 2. Put it in AIMP's plugin folder — `<AIMP install dir>\Plugins\aimp_discordPresence\` in a standard install (confirm on yours), or use **Settings ▸ Plugins ▸ Install** on the `.dll`.
 3. Confirm the plugin is **enabled** in **Settings ▸ Plugins**.
 4. Restart AIMP, then play a track; the presence appears on your Discord profile.
