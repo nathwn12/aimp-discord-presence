@@ -1,0 +1,131 @@
+# Docs-only automerge.
+#
+# Contract: a PR is auto-merged ONLY when every changed path is a zero-code docs
+# path (*.md, docs/**, LICENSE/LICENCE, .gitignore, *.example), the actor is a
+# trusted same-repo owner/member/collaborator (verified from fetched PR metadata,
+# never from the ambient actor), and every required check is green. Anything that
+# touches code - including this workflow - is never auto-merged.
+#
+# pull_request_target runs in the base-repo context with a write token; the PR's
+# code is never checked out or executed, so untrusted fork content stays inert.
+name: automerge-docs
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  actions: read
+
+concurrency:
+  group: automerge-docs-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Fetch-metadata-style actor check: trust the API's PR metadata, not the
+      # ambient github.actor. Forks, bots and outside collaborators never qualify.
+      - name: Fetch PR metadata and verify actor
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          meta=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" \
+            --jq '{author:.user.login, assoc:.author_association, head:.head.repo.full_name, base:.base.repo.full_name, state:.state, draft:.draft, sha:.head.sha}')
+          echo "PR metadata: $meta"
+          author=$(jq -r .author <<<"$meta")
+          assoc=$(jq -r .assoc <<<"$meta")
+          head=$(jq -r .head <<<"$meta")
+          base=$(jq -r .base <<<"$meta")
+          state=$(jq -r .state <<<"$meta")
+          draft=$(jq -r .draft <<<"$meta")
+          case "$assoc" in
+            OWNER|MEMBER|COLLABORATOR) ;;
+            *) echo "skip: untrusted author_association=$assoc"; echo "trusted=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if [ "$head" != "$base" ]; then
+            echo "skip: head repo '$head' != base repo '$base' (fork PR)"
+            echo "trusted=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$state" != "open" ] || [ "$draft" != "false" ]; then
+            echo "skip: PR is closed or a draft"
+            echo "trusted=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "author=$author assoc=$assoc trusted=true" >> "$GITHUB_OUTPUT"
+
+      # Deny by default: if ANY changed file is not a docs/zero-code path, stop.
+      - name: Require docs-only paths
+        id: scope
+        if: steps.meta.outputs.trusted == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          is_docs() {
+            case "$1" in
+              *.md|*.example) return 0 ;;
+              docs/*) return 0 ;;
+            esac
+            b="${1##*/}"
+            case "$b" in
+              LICENSE|LICENSE.md|LICENCE|LICENCE.md|.gitignore) return 0 ;;
+            esac
+            return 1
+          }
+          files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename')
+          code=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if ! is_docs "$f"; then
+              echo "code path changed: $f -> never automerge"
+              code=1
+            fi
+          done <<< "$files"
+          if [ "$code" -ne 0 ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          echo "docs-only PR: $(printf '%s\n' "$files" | grep -c .) file(s)"
+
+      # --required excludes this automerge workflow itself (no self-wait) and
+      # gates on the repository's required checks. --watch waits for them to finish.
+      - name: Require green checks
+        id: gates
+        if: steps.meta.outputs.trusted == 'true' && steps.scope.outputs.docs_only == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! gh pr checks "$PR" --required --watch --interval 20 --fail-fast; then
+            echo "skip: one or more required checks are failing or did not finish green"
+            echo "green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "green=true" >> "$GITHUB_OUTPUT"
+
+      # --auto only *arms* auto-merge: GitHub completes the merge later, once the
+      # head SHA's required checks are green. Squash matches house convention.
+      - name: Enable auto-merge (squash)
+        if: steps.meta.outputs.trusted == 'true' && steps.scope.outputs.docs_only == 'true' && steps.gates.outputs.green == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR" --auto --squash
+          echo "auto-merge armed for docs-only PR #$PR"
