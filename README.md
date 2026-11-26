@@ -81,7 +81,7 @@ cmake -B build -A x64 -DAUTOVERSIONING=ON
 cmake --build build --config Release
 ```
 
-CI runs the same configure and build for Win32 and x64 on every push and pull request. The build script and packaging route are in [docs/BUILDING.md](docs/BUILDING.md).
+CI builds Win32 and x64 on pushes to main and PRs into main, but it does not run the CTest suite; build and test steps are in [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Status
 
